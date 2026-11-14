@@ -9,15 +9,16 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261115.2";
+} from "./core.js?v=20261115.3";
 import {
   VERSION,
   compatibleSource,
   inspectSource,
   releaseSource,
+  clearSources,
   streamFailure,
-} from "./compatibility.js?v=20261115.2";
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.2";
+} from "./compatibility.js?v=20261115.3";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.3";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
@@ -150,7 +151,9 @@ async function api(endpoint, params, signal) {
           "Яндекс Диск временно недоступен. Попробуйте ещё раз.",
       );
     }
-    return await response.json();
+    const body = await response.json();
+    if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+    return body;
   } catch (error) {
     if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
     if (error.name === "AbortError")
@@ -215,17 +218,16 @@ async function hrefFor(origin, item, signal) {
   );
 }
 async function loadSource(origin, path = origin.path, stack = []) {
-  loadingController?.abort();
-  stopProbe();
+  if (clearing) return;
+  resetSession();
+  store.set("source", "");
   const controller = new AbortController();
   loadingController = controller;
-  $("open-source").disabled = true;
   $("cancel-load").hidden = false;
-  $("open-source").textContent = "Открываем…";
   notice("Получаем список с Яндекс Диска…");
   try {
     const data = await resource(origin, path, controller.signal);
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || loadingController !== controller) return;
     const entries = data.type === "dir" ? data._embedded.items : [data];
     const videos = entries
       .filter(isVideo)
@@ -244,7 +246,7 @@ async function loadSource(origin, path = origin.path, stack = []) {
     folderName = data.name;
     folderStack = stack;
     document.body.classList.add("has-source");
-    store.set("source", $("source").value.trim());
+    store.set("source", linkFor(origin, { path: origin.path }));
     $("filter").value = "";
     $("unwatched-only").checked = false;
     $("folder-name").textContent = folderName;
@@ -260,7 +262,8 @@ async function loadSource(origin, path = origin.path, stack = []) {
     renderList();
     if (items.length) await openVideo(items[0], false);
   } catch (error) {
-    if (error.name !== "AbortError") notice(error.message, true);
+    if (!controller.signal.aborted && loadingController === controller)
+      notice(error.message, true);
   } finally {
     if (loadingController === controller) {
       loadingController = null;
@@ -281,7 +284,7 @@ $("source-form").addEventListener("submit", (event) => {
   }
 });
 $("cancel-load").onclick = () => {
-  loadingController?.abort();
+  resetSession();
   notice("Загрузка списка отменена.");
 };
 $("folder-back").onclick = () => {
@@ -374,7 +377,9 @@ function renderList() {
     empty.textContent =
       items.length || folders.length
         ? "Нет подходящих видео. Измените фильтр."
-        : "В этой папке нет видео.";
+        : source
+          ? "В этой папке нет видео."
+          : "Вставьте ссылку, чтобы открыть видео или папку.";
     fragment.append(empty);
   }
   list.replaceChildren(fragment);
@@ -422,6 +427,66 @@ function controlsEnabled(enabled) {
 function showLoading(visible, text = "Открываем видео…") {
   $("loading-video").hidden = !visible;
   $("loading-text").textContent = text;
+}
+// Invalidate asynchronous work BEFORE touching the media element. Even an empty
+// folder, an API error or a late Safari recovery must leave the old source gone.
+function resetSession() {
+  savePosition(true);
+  loadingController?.abort();
+  loadingController = null;
+  mediaController?.abort();
+  mediaController = null;
+  mediaGeneration++;
+  clearTimeout(durationTimer);
+  const token = current?.compatToken;
+  current = null;
+  metadataTarget = null;
+  playerReady = false;
+  dragging = false;
+  tick = 0;
+  stopProbe();
+  clearTimeout(probeTimer);
+  probed.clear();
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  releaseSource(token);
+  if (overview) video.muted = previousMuted;
+  overview = limited = false;
+  source = null;
+  items = [];
+  folders = [];
+  folderStack = [];
+  folderPath = folderName = "";
+  document.body.classList.remove("has-source");
+  $("video-name").textContent = "Ваше видео будет здесь";
+  $("video-name").title = "";
+  $("video-index").textContent = "ГОТОВ К ПРОСМОТРУ";
+  $("folder-name").textContent = "";
+  $("folder-nav").hidden = true;
+  $("folder-back").disabled = true;
+  $("video-count").textContent = "0";
+  $("list-tools").hidden = true;
+  $("filter").value = "";
+  $("unwatched-only").checked = false;
+  $("empty").hidden = false;
+  $("center-play").hidden = true;
+  $("video-error").hidden = true;
+  $("error-diagnostics").textContent = "";
+  $("error-details").open = false;
+  $("disk-link").removeAttribute("href");
+  $("elapsed").textContent = $("duration").textContent = "0:00";
+  $("seek").value = 0;
+  $("seek").style.setProperty("--progress", "0%");
+  $("seek").setAttribute("aria-valuetext", "0:00 из 0:00");
+  $("play").innerHTML = svg("play");
+  $("play").setAttribute("aria-label", "Воспроизвести");
+  $("cancel-load").hidden = true;
+  controlsEnabled(false);
+  showLoading(false);
+  speedPanel(false);
+  speedNote();
+  renderList();
 }
 function showVideoError(message, detail = {}) {
   clearTimeout(durationTimer);
@@ -584,9 +649,11 @@ async function openVideo(
 }
 async function play() {
   if (!current || !playerReady) return;
+  const generation = mediaGeneration;
   try {
     await video.play();
   } catch (error) {
+    if (generation !== mediaGeneration) return;
     if (error.name !== "AbortError" && error.name !== "NotSupportedError") {
       $("center-play").hidden = false;
       showLoading(false);
@@ -671,6 +738,7 @@ video.addEventListener("pause", () => {
   scheduleProbe();
 });
 video.addEventListener("ended", () => {
+  if (!current || !playerReady) return;
   if (current) updateRecord(current.key, { watched: true, position: 0 });
   renderList();
   const index = currentIndex();
@@ -1204,21 +1272,62 @@ $("copy-error").onclick = async () => {
   }
 };
 $("help-close").onclick = $("help-done").onclick = () => $("help").close();
-$("clear-history").onclick = () => $("clear-dialog").showModal();
+let clearing = false;
+const resetIds = new Set();
+function showClearDialog(forgetHistory = false) {
+  $("clear-saved-history").checked = forgetHistory;
+  $("clear-dialog").showModal();
+}
+$("clear-source").onclick = () => showClearDialog();
+$("clear-history").onclick = () => showClearDialog(true);
 $("clear-cancel").onclick = () => $("clear-dialog").close();
-$("clear-confirm").onclick = () => {
-  history = {};
-  persist();
-  store.set("source", "");
-  store.set("rate", 1);
-  store.set("autonext", true);
-  $("source").value = "";
-  if (current) {
-    updateRecord(current.key, { duration: video.duration });
+function receiveReset({ id, forgetHistory = false }) {
+  if (resetIds.has(id)) return;
+  resetIds.add(id);
+  if (resetIds.size > 100) resetIds.delete(resetIds.values().next().value);
+  resetSession();
+  if (forgetHistory) {
+    history = {};
+    persist();
   }
-  renderList();
+  store.set("source", "");
+  $("source").value = "";
   $("clear-dialog").close();
-  toast("История устройства очищена");
+  notice("Плеер очищен. Вставьте новую ссылку на видео или папку.");
+  collapse();
+}
+window.addEventListener("disk-play-cleared", (event) =>
+  receiveReset(event.detail),
+);
+$("clear-confirm").onclick = async () => {
+  if (clearing) return;
+  clearing = true;
+  const detail = {
+    id: crypto.randomUUID(),
+    forgetHistory: $("clear-saved-history").checked,
+  };
+  receiveReset(detail);
+  $("open-source").disabled =
+    $("clear-source").disabled =
+    $("clear-history").disabled =
+      true;
+  notice("Останавливаем потоки и очищаем данные плеера…");
+  try {
+    await clearSources(detail);
+    notice("Плеер очищен. Вставьте новую ссылку на видео или папку.");
+    $("source").focus();
+  } catch (error) {
+    notice(
+      "Видео остановлено, но очистка хранилища не завершена. " + error.message,
+      true,
+    );
+  } finally {
+    clearing = false;
+    $("open-source").disabled =
+      $("clear-source").disabled =
+      $("clear-history").disabled =
+        false;
+  }
 };
 for (const dialog of document.querySelectorAll("dialog"))
   dialog.addEventListener("click", (event) => {

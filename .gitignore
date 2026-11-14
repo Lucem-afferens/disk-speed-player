@@ -7,3 +7,6 @@ playwright-report/
 *.mov
 *.webm
 *.log
+
+# Synthetic 64×64 test pattern; no user media.
+!tests/fixtures/clip.mp4

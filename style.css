@@ -210,6 +210,7 @@ h1 {
   width: 19px;
 }
 .source-foot {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -217,6 +218,17 @@ h1 {
   font-size: 11px;
   min-height: 20px;
   margin-top: 9px;
+}
+.clear-history-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 20px 0;
+  line-height: 1.5;
+}
+.clear-history-option input {
+  flex: 0 0 auto;
+  margin-top: 5px;
 }
 .source-foot button {
   min-height: 24px;

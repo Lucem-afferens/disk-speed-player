@@ -1,16 +1,50 @@
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.2";
-export const VERSION = "20261115.2";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.3";
+import "./stream-store.js?v=20261115.3";
+export const VERSION = "20261115.3";
 const sources = new Map(),
   inspections = new Map(),
   errors = new Map();
-let registration = null;
+let registration = null,
+  sourceEpoch = 0;
+const resetKey = "disk-play:v1:reset";
+const resetIds = new Set();
+let resetChannel;
+try {
+  resetChannel = new BroadcastChannel("disk-play-reset");
+} catch {}
+function forgetSources() {
+  sourceEpoch++;
+  sources.clear();
+  inspections.clear();
+  errors.clear();
+}
+function receiveClear(detail) {
+  if (!detail || typeof detail.id !== "string" || resetIds.has(detail.id))
+    return;
+  resetIds.add(detail.id);
+  if (resetIds.size > 100) resetIds.delete(resetIds.values().next().value);
+  forgetSources();
+  window.dispatchEvent(new CustomEvent("disk-play-cleared", { detail }));
+}
+if (resetChannel) resetChannel.onmessage = (event) => receiveClear(event.data);
+window.addEventListener("storage", (event) => {
+  if (event.key !== resetKey || !event.newValue) return;
+  try {
+    receiveClear(JSON.parse(event.newValue));
+  } catch {}
+});
 if ("serviceWorker" in navigator)
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "disk-play-source") {
       const entry = sources.get(event.data.token);
       if (entry) entry.expires = Date.now() + 21600000;
       event.ports[0]?.postMessage(entry || null);
-    } else if (event.data?.type === "disk-play-stream-error")
+    } else if (event.data?.type === "disk-play-cleared")
+      receiveClear(event.data.detail);
+    else if (
+      event.data?.type === "disk-play-stream-error" &&
+      sources.has(event.data.token)
+    )
       errors.set(event.data.token, event.data);
   });
 function activated(worker) {
@@ -86,12 +120,16 @@ async function worker() {
   return navigator.serviceWorker.controller;
 }
 export async function inspectSource(href, size, signal, identity) {
+  const epoch = sourceEpoch;
   // Update an already installed worker BEFORE asking for ranges: the old worker
   // can trigger WebKit's dropped-Range pass-through bug on the first request.
   await worker();
-  if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+  if (signal?.aborted || epoch !== sourceEpoch)
+    throw new DOMException("Cancelled", "AbortError");
   if (identity && inspections.has(identity)) return inspections.get(identity);
   const info = await inspectRemoteMP4(href, size, signal);
+  if (signal?.aborted || epoch !== sourceEpoch)
+    throw new DOMException("Cancelled", "AbortError");
   if (identity) {
     if (inspections.size >= 128)
       inspections.delete(inspections.keys().next().value);
@@ -100,12 +138,15 @@ export async function inspectSource(href, size, signal, identity) {
   return info;
 }
 export async function compatibleSource(href, size, signal, options = {}) {
+  const epoch = sourceEpoch;
   const info =
     options.info || (await inspectSource(href, size, signal, options.identity));
   if (!info.patches.length) return null;
-  if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+  if (signal?.aborted || epoch !== sourceEpoch)
+    throw new DOMException("Cancelled", "AbortError");
   const active = await worker();
-  if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+  if (signal?.aborted || epoch !== sourceEpoch)
+    throw new DOMException("Cancelled", "AbortError");
   const token = crypto.randomUUID(),
     entry = {
       href,
@@ -135,8 +176,10 @@ export async function compatibleSource(href, size, signal, options = {}) {
         channel.port2,
       ]);
     });
+    if (signal?.aborted || epoch !== sourceEpoch)
+      throw new DOMException("Cancelled", "AbortError");
   } catch (error) {
-    sources.delete(token);
+    releaseSource(token);
     throw error;
   }
   return {
@@ -162,8 +205,37 @@ export function releaseSource(token) {
     token,
   });
 }
-export function clearSources() {
-  sources.clear();
-  errors.clear();
-  navigator.serviceWorker?.controller?.postMessage({ type: "disk-play-clear" });
+export async function clearSources(detail) {
+  resetIds.add(detail.id);
+  forgetSources();
+  resetChannel?.postMessage(detail);
+  try {
+    localStorage.setItem(resetKey, JSON.stringify(detail));
+  } catch {}
+  const existing = await navigator.serviceWorker?.getRegistration(
+    new URL("./", import.meta.url).href,
+  );
+  if (!existing) {
+    // A suspended worker may have left metadata even without a controller.
+    await StreamStore.clear();
+    return;
+  }
+  const active = await worker();
+  await new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => {
+      channel.port1.close();
+      reject(new Error("Хранилище не ответило. Нажмите очистку ещё раз."));
+    }, 10000);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timer);
+      channel.port1.close();
+      if (event.data?.ok && event.data.version === VERSION) resolve();
+      else
+        reject(
+          new Error("Не удалось удалить временные данные. Повторите очистку."),
+        );
+    };
+    active.postMessage({ type: "disk-play-clear", detail }, [channel.port2]);
+  });
 }

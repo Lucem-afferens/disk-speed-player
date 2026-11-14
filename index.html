@@ -14,7 +14,7 @@
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="Disk Play" />
-    <link rel="manifest" href="./manifest.webmanifest?v=20261115.2" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20261115.3" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <meta name="referrer" content="no-referrer" />
     <meta
@@ -27,8 +27,8 @@
       content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра."
     />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css?v=20261115.2" />
-    <script type="module" src="./app.js?v=20261115.2"></script>
+    <link rel="stylesheet" href="./style.css?v=20261115.3" />
+    <script type="module" src="./app.js?v=20261115.3"></script>
   </head>
   <body>
     <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -125,6 +125,14 @@
           <span>Публичная ссылка с разрешённым скачиванием</span
           ><button id="cancel-load" class="text-button" type="button" hidden>
             Отменить загрузку списка
+          </button>
+          <button
+            id="clear-source"
+            class="text-button"
+            type="button"
+            aria-haspopup="dialog"
+          >
+            Очистить папку и видео
           </button>
         </div>
       </form>
@@ -356,7 +364,7 @@
       <footer class="site-footer">
         <span
           >Видео остаются на вашем Диске.<small class="build-version"
-            >Версия 20261115.2</small
+            >Версия 20261115.3</small
           ></span
         ><button id="clear-history" class="text-button">
           Очистить историю устройства
@@ -441,11 +449,20 @@
       <button id="install-done" class="primary">Понятно</button>
     </dialog>
     <dialog id="clear-dialog">
-      <h2>Очистить историю?</h2>
+      <h2>Очистить папку и видео?</h2>
       <p>
-        Удалятся сохранённые позиции, отметки и последняя ссылка в этом
-        браузере. Файлы на Яндекс Диске останутся на месте.
+        Видео остановится, папка и список исчезнут. Временные данные потоков и
+        последняя ссылка будут удалены во всех открытых вкладках Disk Play этого
+        браузера. После этого можно сразу вставить новую ссылку.
       </p>
+      <p>
+        Файлы на Яндекс Диске останутся на месте. Видео на сервере плеера не
+        хранятся.
+      </p>
+      <label class="clear-history-option"
+        ><input id="clear-saved-history" type="checkbox" /> Также удалить
+        историю, позиции и отметки просмотра</label
+      >
       <div class="dialog-actions">
         <button id="clear-cancel" class="secondary">Отмена</button
         ><button id="clear-confirm" class="primary">Очистить</button>

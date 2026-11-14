@@ -16,7 +16,7 @@ const makeEntry = () => ({
   expires: Date.now() + 60000,
   source: { key: "https://disk.yandex.ru/d/test-public", path: "/camera.mp4" },
 });
-function boot({ db = new Map(), clients = [], fetcher } = {}) {
+function boot({ db = new Map(), clients = [], fetcher, storage = {} } = {}) {
   const handlers = new Map(),
     store = {
       get: async (k) => db.get(k),
@@ -24,6 +24,7 @@ function boot({ db = new Map(), clients = [], fetcher } = {}) {
       delete: async (k) => db.delete(k),
       clear: async () => db.clear(),
       clean: async () => {},
+      ...storage,
     };
   const scope = {
     registration: { scope: origin + "/" },
@@ -47,6 +48,7 @@ function boot({ db = new Map(), clients = [], fetcher } = {}) {
     TransformStream,
     MessageChannel,
     AbortSignal,
+    AbortController,
     setTimeout,
     clearTimeout,
     fetch:
@@ -56,6 +58,16 @@ function boot({ db = new Map(), clients = [], fetcher } = {}) {
       }),
   });
   return {
+    async message(type, extra = {}) {
+      let promise, reply;
+      handlers.get("message")({
+        data: { type, token, ...extra },
+        ports: [{ postMessage: (value) => (reply = value) }],
+        waitUntil: (p) => (promise = p),
+      });
+      await promise;
+      return reply;
+    },
     forward(request) {
       let result;
       handlers.get("fetch")({ request, respondWith: (p) => (result = p) });
@@ -224,4 +236,164 @@ test("rejects mismatching ranges and invalid registration sources", async () => 
   await worker.register();
   assert.equal((await worker.request()).status, 502);
   assert.equal((await worker.status()).failure.code, "range_mismatch");
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+for (const type of ["disk-play-release", "disk-play-clear"]) {
+  test(`${type} cannot be undone by an in-flight URL renewal`, async () => {
+    const entered = deferred(),
+      finish = deferred(),
+      db = new Map();
+    let renewalSignal;
+    const worker = boot({
+      db,
+      fetcher: async (url, options) => {
+        if (url.includes("cloud-api.yandex.net")) {
+          renewalSignal = options.signal;
+          entered.resolve();
+          await finish.promise; // Deliberately ignore abort to exercise the stale-write guard.
+          return Response.json({ href: "https://storage.yandex.net/renewed" });
+        }
+        return new Response(null, { status: 403 });
+      },
+    });
+    await worker.register();
+    const request = worker.request();
+    await entered.promise;
+    await worker.message(type, { detail: { id: "reset-1" } });
+    assert.equal(renewalSignal.aborted, true);
+    finish.resolve();
+    await request;
+    assert.equal(db.size, 0);
+    assert.equal((await worker.request()).status, 410);
+  });
+  test(`${type} rejects a late client recovery reply`, async () => {
+    const entered = deferred(),
+      db = new Map();
+    let port;
+    const worker = boot({
+      db,
+      clients: [
+        {
+          id: "window",
+          postMessage(message, ports) {
+            if (message.type === "disk-play-source") {
+              port = ports[0];
+              entered.resolve();
+            }
+          },
+        },
+      ],
+    });
+    const pending = worker.request();
+    await entered.promise;
+    await worker.message(type, { detail: { id: "reset-2" } });
+    port.postMessage(makeEntry());
+    assert.equal((await pending).status, 410);
+    assert.equal(db.size, 0);
+  });
+}
+test("clear waits for pending storage writes and then removes every source", async () => {
+  const entered = deferred(),
+    finish = deferred(),
+    db = new Map();
+  const worker = boot({
+    db,
+    storage: {
+      put: async (key, value) => {
+        entered.resolve();
+        await finish.promise;
+        db.set(key, value);
+      },
+    },
+  });
+  const register = worker.register();
+  await entered.promise;
+  let cleared = false;
+  const clear = worker.message("disk-play-clear").then((reply) => {
+    cleared = true;
+    return reply;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cleared, false);
+  finish.resolve();
+  assert.equal((await register).ok, false);
+  assert.equal((await clear).ok, true);
+  assert.equal(db.size, 0);
+});
+test("clear reports a storage failure instead of claiming success", async () => {
+  const worker = boot({
+    storage: {
+      clear: async () => {
+        throw Error("disk failure");
+      },
+    },
+  });
+  assert.equal((await worker.message("disk-play-clear")).ok, false);
+});
+test("clear cancels an already returned streaming body and allows new sources", async () => {
+  let cancelled = false;
+  const db = new Map();
+  const worker = boot({
+    db,
+    fetcher: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array([0, 1]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 206, headers: { "Content-Range": "bytes 0-15/16" } },
+      ),
+  });
+  await worker.register();
+  const response = await worker.request(),
+    reader = response.body.getReader();
+  await reader.read();
+  await worker.message("disk-play-clear");
+  await assert.rejects(() => reader.read(), { name: "AbortError" });
+  assert.equal(cancelled, true);
+  assert.equal(db.size, 0);
+  const fresh = await worker.message("disk-play-register", {
+    token: "new-token",
+    entry: makeEntry(),
+  });
+  assert.equal(fresh.ok, true);
+  assert.equal(db.size, 1);
+});
+
+test("a registration started during clear is persisted after the clear", async () => {
+  const entered = deferred(),
+    finish = deferred(),
+    db = new Map();
+  const worker = boot({
+    db,
+    storage: {
+      clear: async () => {
+        entered.resolve();
+        await finish.promise;
+        db.clear();
+      },
+    },
+  });
+  await worker.register();
+  const clear = worker.message("disk-play-clear");
+  const registration = worker.message("disk-play-register", {
+    token: "next-token",
+    entry: makeEntry(),
+  });
+  await entered.promise;
+  finish.resolve();
+  assert.equal((await clear).ok, true);
+  assert.equal((await registration).ok, true);
+  assert.deepEqual([...db.keys()], ["next-token"]);
 });

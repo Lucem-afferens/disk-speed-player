@@ -1,9 +1,38 @@
 // Runs entirely on the viewer's device. Persists only expiring source metadata.
-importScripts("./stream-store.js?v=20261115.2");
-const VERSION = "20261115.2",
+importScripts("./stream-store.js?v=20261115.3");
+const VERSION = "20261115.3",
   sources = new Map(),
   renewals = new Map(),
   failures = new Map();
+let epoch = 0,
+  writes = Promise.resolve();
+const revoked = new Set(),
+  controllers = new Map();
+const live = (token, version) => version === epoch && !revoked.has(token);
+function write(action) {
+  const result = writes.then(action);
+  writes = result.catch(() => {});
+  return result;
+}
+function streamController(token) {
+  if (!controllers.has(token)) controllers.set(token, new AbortController());
+  return controllers.get(token);
+}
+function linkedController(signals) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  for (const signal of signals) {
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  }
+  return {
+    signal: controller.signal,
+    abort,
+    close() {
+      for (const signal of signals) signal.removeEventListener("abort", abort);
+    },
+  };
+}
 const prefix = new URL("./_stream/", self.registration.scope).pathname;
 const mediaHost =
   /(^|\.)(yandex\.(ru|net|com|com\.tr|by|kz)|yandexcloud\.net)$/;
@@ -53,11 +82,14 @@ function validSource(source) {
     return false;
   }
 }
-async function remember(token, entry) {
+async function remember(token, entry, version = epoch) {
+  if (!live(token, version)) return false;
   sources.set(token, entry);
   try {
-    await StreamStore.put(token, entry);
-    return true;
+    await write(() =>
+      live(token, version) ? StreamStore.put(token, entry) : undefined,
+    );
+    return live(token, version);
   } catch {
     return false;
   }
@@ -70,36 +102,65 @@ self.addEventListener("activate", (event) =>
 );
 self.addEventListener("message", (event) => {
   const { type, token, entry } = event.data || {};
+  let cleared;
+  // Revoke synchronously; pending reads, URL renewals and body streams must not
+  // repopulate memory or IndexedDB after release/clear has been acknowledged.
+  if (type === "disk-play-release") {
+    revoked.add(token);
+    controllers.get(token)?.abort();
+    controllers.delete(token);
+    sources.delete(token);
+    failures.delete(token);
+    renewals.delete(token);
+  } else if (type === "disk-play-clear") {
+    epoch++;
+    for (const controller of controllers.values()) controller.abort();
+    controllers.clear();
+    sources.clear();
+    failures.clear();
+    renewals.clear();
+    // Enqueue before awaiting clients so a new tab's registration goes AFTER
+    // this clear, rather than being accidentally erased by it.
+    cleared = write(() => StreamStore.clear()).then(
+      () => true,
+      () => false,
+    );
+  }
+  const version = epoch;
   event.waitUntil(
     (async () => {
       if (type === "disk-play-register") {
-        if (typeof token === "string" && valid(entry)) {
+        if (typeof token === "string" && valid(entry) && live(token, version)) {
           failures.delete(token);
-          const persistent = await remember(token, entry);
+          const persistent = await remember(token, entry, version);
           await StreamStore.clean().catch(() => {});
           event.ports[0]?.postMessage({
-            ok: true,
+            ok: live(token, version),
             persistent,
             version: VERSION,
           });
         } else event.ports[0]?.postMessage({ ok: false, version: VERSION });
       } else if (type === "disk-play-release") {
-        sources.delete(token);
-        failures.delete(token);
-        await StreamStore.delete(token).catch(() => {});
+        await write(() => StreamStore.delete(token)).catch(() => {});
       } else if (type === "disk-play-clear") {
-        sources.clear();
-        failures.clear();
-        await StreamStore.clear().catch(() => {});
-        event.ports[0]?.postMessage({ ok: true });
+        for (const client of await self.clients.matchAll({ type: "window" }))
+          client.postMessage({
+            type: "disk-play-cleared",
+            detail: event.data.detail,
+          });
+        const ok = await cleared;
+        event.ports[0]?.postMessage({ ok, version: VERSION });
       }
     })(),
   );
 });
 async function lookup(token, clientId) {
+  const version = epoch;
+  if (!live(token, version)) return null;
   if (valid(sources.get(token))) return sources.get(token);
   try {
     const saved = await StreamStore.get(token);
+    if (!live(token, version)) return null;
     if (valid(saved)) {
       sources.set(token, saved);
       return saved;
@@ -113,6 +174,7 @@ async function lookup(token, clientId) {
     ...all.filter((client) => client.id !== primary?.id),
   ];
   for (const client of clients) {
+    if (!live(token, version)) return null;
     const value = await new Promise((resolve) => {
       const channel = new MessageChannel();
       const timer = setTimeout(() => {
@@ -126,9 +188,10 @@ async function lookup(token, clientId) {
       };
       client.postMessage({ type: "disk-play-source", token }, [channel.port2]);
     });
+    if (!live(token, version)) return null;
     if (valid(value)) {
-      await remember(token, value);
-      return value;
+      await remember(token, value, version);
+      return live(token, version) ? value : null;
     }
   }
   return null;
@@ -150,13 +213,16 @@ function rangeOf(value, size) {
     ? { start, end, partial: true }
     : null;
 }
-async function report(token, code, status = 0) {
+async function report(token, code, status = 0, version = epoch) {
+  if (!live(token, version)) return;
   const detail = { code, status, version: VERSION, time: Date.now() };
   failures.set(token, detail);
   for (const client of await self.clients.matchAll({ type: "window" }))
     client.postMessage({ type: "disk-play-stream-error", token, ...detail });
 }
 async function renew(token, entry) {
+  const version = epoch;
+  if (!live(token, version)) throw new Error("Source released");
   if (!validSource(entry.source)) throw new Error("No source for renewal");
   if (!renewals.has(token))
     renewals.set(
@@ -165,30 +231,38 @@ async function renew(token, entry) {
         const params = new URLSearchParams({ public_key: entry.source.key });
         if (entry.source.path && entry.source.path !== "/")
           params.set("path", entry.source.path);
-        const response = await fetch(
-          "https://cloud-api.yandex.net/v1/disk/public/resources/download?" +
-            params,
-          {
-            credentials: "omit",
-            cache: "no-store",
-            referrerPolicy: "no-referrer",
-            signal: AbortSignal.timeout(20000),
-          },
-        );
-        if (!response.ok) {
-          const error = new Error("Download URL renewal failed");
-          error.status = response.status;
-          throw error;
+        const connection = linkedController([streamController(token).signal]);
+        const timer = setTimeout(connection.abort, 20000);
+        try {
+          const response = await fetch(
+            "https://cloud-api.yandex.net/v1/disk/public/resources/download?" +
+              params,
+            {
+              credentials: "omit",
+              cache: "no-store",
+              referrerPolicy: "no-referrer",
+              signal: connection.signal,
+            },
+          );
+          if (!response.ok) {
+            const error = new Error("Download URL renewal failed");
+            error.status = response.status;
+            throw error;
+          }
+          const body = await response.json();
+          if (!live(token, version)) throw new Error("Source released");
+          const next = {
+            ...entry,
+            href: body.href,
+            expires: Date.now() + 21600000,
+          };
+          if (!valid(next)) throw new Error("Invalid renewed source");
+          Object.assign(entry, next);
+          await remember(token, entry, version);
+        } finally {
+          clearTimeout(timer);
+          connection.close();
         }
-        const body = await response.json();
-        const next = {
-          ...entry,
-          href: body.href,
-          expires: Date.now() + 21600000,
-        };
-        if (!valid(next)) throw new Error("Invalid renewed source");
-        Object.assign(entry, next);
-        await remember(token, entry);
       })().finally(() => renewals.delete(token)),
     );
   await renewals.get(token);
@@ -228,11 +302,13 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(stream(event, token));
 });
 async function stream(event, token) {
+  const version = epoch;
   if (!["GET", "HEAD"].includes(event.request.method))
     return new Response(null, { status: 405 });
   const entry = await lookup(token, event.clientId);
+  if (!live(token, version)) return new Response(null, { status: 410 });
   if (!entry) {
-    await report(token, "source_missing", 410);
+    await report(token, "source_missing", 410, version);
     return new Response("Обновите ссылку в плеере.", { status: 410 });
   }
   const range = rangeOf(event.request.headers.get("Range"), entry.size);
@@ -253,22 +329,31 @@ async function stream(event, token) {
     headers["Content-Range"] = `bytes ${start}-${end}/${entry.size}`;
   if (event.request.method === "HEAD")
     return new Response(null, { status: range.partial ? 206 : 200, headers });
+  const connection = linkedController([
+    event.request.signal,
+    streamController(token).signal,
+  ]);
+  let piping = false;
   try {
     const get = () =>
       fetch(entry.href, {
         headers: { Range: `bytes=${start}-${end}` },
         credentials: "omit",
         referrerPolicy: "no-referrer",
-        signal: event.request.signal,
+        signal: connection.signal,
         cache: "no-store",
       });
     let response;
     try {
       response = await get();
     } catch (error) {
-      if (event.request.signal.aborted) throw error;
+      if (connection.signal.aborted) throw error;
       await renew(token, entry);
       response = await get();
+    }
+    if (!live(token, version) || connection.signal.aborted) {
+      await response.body?.cancel();
+      return new Response(null, { status: 410 });
     }
     if (
       [401, 403, 404, 410].includes(response.status) &&
@@ -276,12 +361,17 @@ async function stream(event, token) {
     ) {
       await response.body?.cancel();
       await renew(token, entry);
+      if (!live(token, version)) return new Response(null, { status: 410 });
       response = await get();
+    }
+    if (!live(token, version) || connection.signal.aborted) {
+      await response.body?.cancel();
+      return new Response(null, { status: 410 });
     }
     if (response.status !== 206 || !response.body) {
       const status = response.status;
       await response.body?.cancel();
-      await report(token, "upstream_http", status);
+      await report(token, "upstream_http", status, version);
       return new Response("Диск временно не отдаёт видео.", { status: 502 });
     }
     const remoteRange = response.headers.get("Content-Range");
@@ -295,7 +385,7 @@ async function stream(event, token) {
         Number(match[3]) !== entry.size
       ) {
         await response.body.cancel();
-        await report(token, "range_mismatch", 502);
+        await report(token, "range_mismatch", 502, version);
         return new Response(null, { status: 502 });
       }
       end = Number(match[2]);
@@ -307,33 +397,41 @@ async function stream(event, token) {
     failures.delete(token);
     let position = start;
     const replacement = [104, 118, 99, 49];
-    const output = response.body.pipeThrough(
-      new TransformStream({
-        transform(chunk, controller) {
-          if (position + chunk.length > end + 1)
-            throw new Error("Invalid range body");
-          let data = chunk;
-          for (const patch of entry.patches)
-            if (patch < position + chunk.length && patch + 4 > position) {
-              if (data === chunk) data = chunk.slice();
-              for (let i = 0; i < 4; i++) {
-                const index = patch + i - position;
-                if (index >= 0 && index < data.length)
-                  data[index] = replacement[i];
-              }
+    const output = new TransformStream({
+      transform(chunk, controller) {
+        if (position + chunk.length > end + 1)
+          throw new Error("Invalid range body");
+        let data = chunk;
+        for (const patch of entry.patches)
+          if (patch < position + chunk.length && patch + 4 > position) {
+            if (data === chunk) data = chunk.slice();
+            for (let i = 0; i < 4; i++) {
+              const index = patch + i - position;
+              if (index >= 0 && index < data.length)
+                data[index] = replacement[i];
             }
-          position += chunk.length;
-          controller.enqueue(data);
-        },
-        flush() {
-          if (position !== end + 1) throw new Error("Truncated response");
-        },
-      }),
-    );
-    return new Response(output, { status: partial ? 206 : 200, headers });
+          }
+        position += chunk.length;
+        controller.enqueue(data);
+      },
+      flush() {
+        if (position !== end + 1) throw new Error("Truncated response");
+      },
+    });
+    piping = true;
+    response.body
+      .pipeTo(output.writable, { signal: connection.signal })
+      .catch(() => {})
+      .finally(() => connection.close());
+    return new Response(output.readable, {
+      status: partial ? 206 : 200,
+      headers,
+    });
   } catch (error) {
-    if (!event.request.signal.aborted)
-      await report(token, "network", error.status || 0);
+    if (!connection.signal.aborted)
+      await report(token, "network", error.status || 0, version);
     return new Response("Соединение с Диском прервалось.", { status: 502 });
+  } finally {
+    if (!piping) connection.close();
   }
 }
