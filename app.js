@@ -307,6 +307,9 @@ async function loadSource(
     folderPath = path;
     folderName = data.name;
     folderStack = stack;
+    // The list is ready. Remove its cancel control before restoring scroll;
+    // otherwise its later disappearance changes the mobile form's height.
+    $("cancel-load").hidden = true;
     document.body.classList.add("has-source");
     store.set("source", linkFor(origin, { path: origin.path }));
     $("filter").value =
