@@ -7,6 +7,15 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <meta name="theme-color" content="#123e36" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Disk Play" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20261115.2" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <meta name="referrer" content="no-referrer" />
     <meta
       http-equiv="Content-Security-Policy"
@@ -18,8 +27,8 @@
       content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра."
     />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css" />
-    <script type="module" src="./app.js"></script>
+    <link rel="stylesheet" href="./style.css?v=20261115.2" />
+    <script type="module" src="./app.js?v=20261115.2"></script>
   </head>
   <body>
     <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -68,7 +77,19 @@
         ></a
       ><span class="header-note"
         ><span class="live-dot"></span>С Диска прямо на устройство</span
-      ><button id="help-open" class="text-button" aria-haspopup="dialog">
+      ><button
+        id="install-open"
+        class="text-button"
+        aria-haspopup="dialog"
+        hidden
+      >
+        Без панелей</button
+      ><button
+        id="help-open"
+        class="text-button"
+        aria-haspopup="dialog"
+        aria-label="Как это работает"
+      >
         Как это работает
       </button>
     </header>
@@ -116,6 +137,9 @@
                 <span id="video-index" class="overline">ГОТОВ К ПРОСМОТРУ</span>
                 <h2 id="video-name">Ваше видео будет здесь</h2>
               </div>
+              <button id="install-player" class="install-player" hidden>
+                Убрать панели Safari
+              </button>
               <button
                 id="close-expanded"
                 class="icon-button"
@@ -167,6 +191,13 @@
                 ><a id="disk-link" target="_blank" rel="noopener noreferrer"
                   >Открыть на Диске ↗</a
                 >
+                <details id="error-details">
+                  <summary>Подробности ошибки</summary>
+                  <pre id="error-diagnostics"></pre>
+                  <button id="copy-error" class="text-button">
+                    Скопировать
+                  </button>
+                </details>
               </div>
             </div>
             <div
@@ -323,7 +354,10 @@
         </aside>
       </section>
       <footer class="site-footer">
-        <span>Видео остаются на вашем Диске.</span
+        <span
+          >Видео остаются на вашем Диске.<small class="build-version"
+            >Версия 20261115.2</small
+          ></span
         ><button id="clear-history" class="text-button">
           Очистить историю устройства
         </button>
@@ -362,10 +396,49 @@
         некоторые записи камер требуют предварительной конвертации.
       </p>
       <p>
-        На iPhone громкость регулируется также кнопками телефона. Кнопка
-        разворота сохраняет наши элементы управления внутри плеера.
+        На iPhone громкость регулируется также кнопками телефона. В Safari
+        кнопка разворота открывает системный видеоплеер. Чтобы сохранить наши
+        кнопки скорости и убрать панели Safari, добавьте страницу на экран
+        «Домой» через меню «Поделиться» и открывайте плеер с этой иконки.
       </p>
       <button id="help-done" class="primary">Понятно</button>
+    </dialog>
+    <dialog id="install-guide">
+      <div class="dialog-heading">
+        <h2>На весь экран iPhone</h2>
+        <button
+          id="install-close"
+          class="icon-button"
+          aria-label="Закрыть инструкцию"
+        >
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <p>
+        Для просмотра без адресной строки и с нашими кнопками скорости добавьте
+        плеер на экран «Домой».
+      </p>
+      <ol class="install-steps">
+        <li>
+          В Safari нажмите <strong>«Поделиться»</strong> (квадрат со стрелкой
+          вверх).
+        </li>
+        <li>
+          Выберите <strong>«На экран “Домой”»</strong>. Если есть переключатель
+          «Открывать как веб-приложение», включите его.
+        </li>
+        <li>
+          Откройте <strong>Disk Play с новой иконки</strong>, вставьте ссылку и
+          разверните видео. Телефон можно повернуть.
+        </li>
+      </ol>
+      <p class="install-note">
+        В обычной вкладке кнопка ⛶ открывает системный видеоплеер без панелей
+        Safari. В нём доступны кнопки Apple; скорость 32× и наши элементы
+        управления удобнее использовать при запуске с экрана «Домой». История
+        вкладки может не перенестись в приложение.
+      </p>
+      <button id="install-done" class="primary">Понятно</button>
     </dialog>
     <dialog id="clear-dialog">
       <h2>Очистить историю?</h2>

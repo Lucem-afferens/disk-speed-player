@@ -9,9 +9,15 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js";
-import { compatibleSource, releaseSource } from "./compatibility.js";
-import { inspectRemoteMP4 } from "./mp4.js";
+} from "./core.js?v=20261115.2";
+import {
+  VERSION,
+  compatibleSource,
+  inspectSource,
+  releaseSource,
+  streamFailure,
+} from "./compatibility.js?v=20261115.2";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.2";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
@@ -63,6 +69,17 @@ let dragging = false,
   playerReady = false,
   expandedBeforeFocus = null;
 let pageActive = true;
+const appleMobile =
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const appleBrowser =
+  appleMobile ||
+  (/Safari/.test(navigator.userAgent) &&
+    !/Chrome|Chromium|Android/.test(navigator.userAgent));
+const standalone = () =>
+  navigator.standalone === true ||
+  matchMedia("(display-mode: standalone)").matches;
+let nativeFullscreen = false;
 const collator = new Intl.Collator("ru", {
   numeric: true,
   sensitivity: "base",
@@ -117,6 +134,7 @@ async function api(endpoint, params, signal) {
         signal: timeout.signal,
         credentials: "omit",
         referrerPolicy: "no-referrer",
+        cache: "no-store",
       },
     );
     if (!response.ok) {
@@ -405,14 +423,94 @@ function showLoading(visible, text = "Открываем видео…") {
   $("loading-video").hidden = !visible;
   $("loading-text").textContent = text;
 }
-function showVideoError(message) {
+function showVideoError(message, detail = {}) {
+  clearTimeout(durationTimer);
+  const diagnostic = {
+    version: VERSION,
+    stage: current?.stage || "open",
+    mediaCode: video.error?.code || 0,
+    compatibleStream: Boolean(current?.compatToken),
+    online: navigator.onLine,
+    hevc: video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"') || "no",
+    ...detail,
+    browser: navigator.userAgent,
+  };
+  $("error-diagnostics").textContent = JSON.stringify(diagnostic, null, 2);
+  $("error-details").open = false;
   showLoading(false);
   $("center-play").hidden = true;
   $("video-error-text").textContent = message;
   $("video-error").hidden = false;
   controlsEnabled(false);
 }
-async function openVideo(item, autoplay = false, resumeOverride = null) {
+function attachMedia(href, generation) {
+  if (generation !== mediaGeneration) return;
+  playerReady = false;
+  current.stage = "load-video";
+  video.src = href;
+  video.load();
+  clearTimeout(durationTimer);
+  durationTimer = setTimeout(() => {
+    if (generation === mediaGeneration && !playerReady)
+      showVideoError(
+        "Видео отвечает слишком долго. Проверьте соединение и повторите попытку.",
+        { reason: "metadata-timeout" },
+      );
+  }, 35000);
+}
+async function prepareCompatible(href, generation) {
+  const item = current.item,
+    origin = current.origin;
+  const controller = new AbortController(),
+    parent = mediaController.signal;
+  const relay = () => controller.abort();
+  parent.addEventListener("abort", relay, { once: true });
+  if (parent.aborted) controller.abort();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    current.stage = "inspect-mp4";
+    const identity =
+      current.key + ":" + (item.md5 || item.modified || "") + ":" + item.size;
+    const info = await inspectSource(
+      href,
+      item.size,
+      controller.signal,
+      identity,
+    );
+    if (generation !== mediaGeneration) return null;
+    if (!info.patches.length) return null;
+    current.stage = "prepare-stream";
+    showLoading(true, "Подготавливаем видео для Safari…");
+    const result = await compatibleSource(href, item.size, controller.signal, {
+      info,
+      source: { key: origin.key, path: item.path },
+    });
+    if (generation !== mediaGeneration || controller.signal.aborted) {
+      releaseSource(result?.token);
+      if (controller.signal.aborted)
+        throw new DOMException("Cancelled", "AbortError");
+      return null;
+    }
+    current.compatToken = result.token;
+    return result.url;
+  } catch (error) {
+    if (parent.aborted) throw error;
+    if (error.name === "AbortError")
+      throw new Error(
+        "Подготовка видео заняла слишком много времени. Проверьте соединение и повторите попытку.",
+      );
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parent.removeEventListener("abort", relay);
+  }
+}
+async function openVideo(
+  item,
+  autoplay = false,
+  resumeOverride = null,
+  recovery = false,
+) {
   stopProbe();
   savePosition(true);
   mediaController?.abort();
@@ -427,6 +525,8 @@ async function openVideo(item, autoplay = false, resumeOverride = null) {
   const index = items.indexOf(item);
   current = {
     item,
+    recovery,
+    stage: "download-link",
     origin: { ...source },
     key: entryKey(item),
     index: index >= 0 ? index + 1 : current?.index || 1,
@@ -460,18 +560,26 @@ async function openVideo(item, autoplay = false, resumeOverride = null) {
     const href = await hrefFor(current.origin, item, controller.signal);
     if (generation !== mediaGeneration) return;
     current.originalHref = href;
-    video.src = href;
-    video.load();
-    clearTimeout(durationTimer);
-    durationTimer = setTimeout(() => {
-      if (generation === mediaGeneration && !playerReady)
-        showVideoError(
-          "Не удалось открыть видео вовремя. Попробуйте ещё раз или проверьте файл на Диске.",
-        );
-    }, 35000);
+    let mediaHref = href;
+    // Prepare known camera containers before Safari's media loader rejects hev1.
+    if (
+      appleBrowser &&
+      /\.(mp4|mov|m4v)$/i.test(item.name) &&
+      video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
+    ) {
+      current.compatTried = true;
+      showLoading(true, "Проверяем совместимость видео…");
+      mediaHref = (await prepareCompatible(href, generation)) || href;
+    }
+    attachMedia(mediaHref, generation);
   } catch (error) {
     if (error.name !== "AbortError" && generation === mediaGeneration)
-      showVideoError(error.message);
+      showVideoError(
+        error instanceof TypeError
+          ? "Не удалось прочитать видео с Диска. Проверьте соединение и повторите попытку."
+          : error.message,
+        { reason: error.name, httpStatus: error.status || null },
+      );
   }
 }
 async function play() {
@@ -479,7 +587,7 @@ async function play() {
   try {
     await video.play();
   } catch (error) {
-    if (error.name !== "AbortError") {
+    if (error.name !== "AbortError" && error.name !== "NotSupportedError") {
       $("center-play").hidden = false;
       showLoading(false);
       toast("Нажмите ▶ в плеере, чтобы начать просмотр.");
@@ -519,6 +627,7 @@ video.addEventListener("loadedmetadata", () => {
     return;
   clearTimeout(durationTimer);
   playerReady = true;
+  current.stage = "ready";
   $("video-error").hidden = true;
   controlsEnabled(true);
   updateRecord(current.key, { duration: video.duration });
@@ -535,6 +644,7 @@ video.addEventListener("loadedmetadata", () => {
   scheduleProbe();
 });
 video.addEventListener("play", () => {
+  if (current) current.wasPlaying = true;
   stopProbe();
   $("play").innerHTML = svg("pause");
   $("play").setAttribute("aria-label", "Пауза");
@@ -551,6 +661,7 @@ video.addEventListener("playing", () => {
   tick = 0;
 });
 video.addEventListener("pause", () => {
+  if (current && !video.error) current.wasPlaying = false;
   $("play").innerHTML = svg("play");
   $("play").setAttribute("aria-label", "Воспроизвести");
   $("center-play").hidden = !playerReady || !$("video-error").hidden;
@@ -596,55 +707,84 @@ video.addEventListener("seeked", () => {
   if (video.readyState >= 3 || video.paused) showLoading(false);
 });
 video.addEventListener("error", async () => {
-  if (!video.getAttribute("src") || !current) return;
+  if (!video.getAttribute("src") || !current || current.handlingError) return;
+  current.handlingError = true;
   clearTimeout(durationTimer);
-  // Some camera MP4s declare HEVC as hev1; Safari requires hvc1. Only the
-  // verified sample-entry tag is changed, in a local streaming worker.
-  if (
-    [3, 4].includes(video.error?.code) &&
-    !current.compatTried &&
-    current.originalHref &&
-    video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
-  ) {
-    current.compatTried = true;
-    const generation = mediaGeneration;
-    showLoading(true, "Подготавливаем совместимый поток…");
-    const timeout = setTimeout(() => {
-      if (generation === mediaGeneration) mediaController?.abort();
-    }, 25000);
-    try {
-      const result = await compatibleSource(
-        current.originalHref,
-        current.item.size,
-        mediaController.signal,
-      );
-      if (generation !== mediaGeneration) {
-        releaseSource(result?.token);
-        return;
-      }
-      if (result) {
-        current.compatToken = result.token;
-        video.src = result.url;
-        video.load();
-        durationTimer = setTimeout(() => {
-          if (generation === mediaGeneration && !playerReady)
-            showVideoError(
-              "Совместимый поток не открылся. Попробуйте ещё раз.",
-            );
-        }, 25000);
-        return;
-      }
-    } catch {
+  const generation = mediaGeneration,
+    code = video.error?.code || 0;
+  const position =
+    metadataTarget?.position ??
+    video.currentTime ??
+    record(current.key).position ??
+    0;
+  const autoplay = metadataTarget?.autoplay ?? current.wasPlaying ?? false;
+  try {
+    if (
+      [3, 4].includes(code) &&
+      !current.compatTried &&
+      current.originalHref &&
+      video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
+    ) {
+      current.compatTried = true;
+      showLoading(true, "Проверяем совместимость видео…");
+      const url = await prepareCompatible(current.originalHref, generation);
       if (generation !== mediaGeneration) return;
-    } finally {
-      clearTimeout(timeout);
+      if (url) {
+        metadataTarget = { position, autoplay };
+        current.handlingError = false;
+        attachMedia(url, generation);
+        return;
+      }
     }
+    const failure = current.compatToken
+      ? await streamFailure(current.compatToken, video.src)
+      : null;
+    if (generation !== mediaGeneration) return;
+    // One fresh URL / stream recovers interrupted or expired sessions, without a loop.
+    if (
+      !current.recovery &&
+      (code === 2 || current.compatToken) &&
+      source?.identity === current.origin.identity
+    ) {
+      showLoading(true, "Восстанавливаем соединение с видео…");
+      await openVideo(current.item, autoplay, position, true);
+      return;
+    }
+    const detail = {
+      mediaCode: code,
+      transport: failure?.code || null,
+      httpStatus: failure?.status || null,
+    };
+    if (failure || code === 2) {
+      showVideoError(
+        failure?.status === 429
+          ? "Яндекс Диск ограничил запросы. Подождите немного и повторите попытку."
+          : "Не удалось получить поток с Диска. Повторите попытку: ссылка обновится, позиция просмотра сохранится.",
+        detail,
+      );
+    } else if (code === 3) {
+      showVideoError(
+        "Браузер получил видео, но не смог его декодировать. Попробуйте повторить; если ошибка сохраняется, для этого устройства понадобится MP4 с H.264.",
+        detail,
+      );
+    } else {
+      showVideoError(
+        "Браузер не смог открыть видео. Причиной может быть доступ к потоку или неподдерживаемый кодек. Повторите попытку или проверьте видео на Диске.",
+        detail,
+      );
+    }
+  } catch (error) {
+    if (generation === mediaGeneration && !mediaController.signal.aborted)
+      showVideoError(
+        "Не удалось подготовить совместимый поток. " +
+          (error instanceof TypeError
+            ? "Проверьте соединение с Диском и повторите попытку."
+            : error.message),
+        { reason: error.name, httpStatus: error.status || null },
+      );
+  } finally {
+    if (generation === mediaGeneration) current.handlingError = false;
   }
-  showVideoError(
-    video.error?.code === 2
-      ? "Соединение с видео прервалось. Повторная попытка обновит ссылку и сохранит позицию."
-      : "Этот формат не воспроизводится браузером либо Диск ограничил доступ. Для телефона подходит MP4 с H.264. Попробуйте обновить ссылку или открыть файл на Диске.",
-  );
 });
 function seekTo(seconds) {
   if (playerReady) {
@@ -830,8 +970,30 @@ setInterval(() => {
   if (target !== null) video.currentTime = target;
 }, 250);
 applySpeed();
+function fitViewport() {
+  const viewport = window.visualViewport;
+  player.style.setProperty(
+    "--viewport-height",
+    `${viewport?.height || innerHeight}px`,
+  );
+  player.style.setProperty(
+    "--viewport-width",
+    `${viewport?.width || innerWidth}px`,
+  );
+  player.style.setProperty("--viewport-top", `${viewport?.offsetTop || 0}px`);
+  player.style.setProperty("--viewport-left", `${viewport?.offsetLeft || 0}px`);
+}
+window.visualViewport?.addEventListener("resize", fitViewport);
+window.visualViewport?.addEventListener("scroll", fitViewport);
+window.addEventListener("resize", fitViewport);
+window.addEventListener("orientationchange", () => {
+  fitViewport();
+  setTimeout(fitViewport, 250);
+});
+fitViewport();
 async function expand() {
   if (
+    nativeFullscreen ||
     player.classList.contains("expanded") ||
     document.fullscreenElement === player
   ) {
@@ -839,17 +1001,36 @@ async function expand() {
     return;
   }
   expandedBeforeFocus = document.activeElement;
+  // iPhone Safari's native player is the available fullscreen API in a browser tab.
+  // Home Screen mode keeps our speed controls and has no Safari address bar.
+  if (
+    appleMobile &&
+    !standalone() &&
+    video.webkitEnterFullscreen &&
+    playerReady
+  ) {
+    try {
+      video.webkitEnterFullscreen();
+      return;
+    } catch {
+      /* Viewport fallback below. */
+    }
+  }
   player.classList.add("expanded");
   document.body.classList.add("player-expanded");
   $("close-expanded").hidden = false;
   $("expand").setAttribute("aria-label", "Свернуть плеер");
+  fitViewport();
   try {
     if (player.requestFullscreen) await player.requestFullscreen();
-  } catch {
-    /* iPhone fallback preserves custom controls in a viewport-sized player. */
-  }
+  } catch {}
 }
 async function collapse() {
+  if (nativeFullscreen) {
+    try {
+      video.webkitExitFullscreen();
+    } catch {}
+  }
   if (document.fullscreenElement) {
     try {
       await document.exitFullscreen();
@@ -861,12 +1042,27 @@ async function collapse() {
   $("expand").setAttribute("aria-label", "Развернуть плеер");
   expandedBeforeFocus?.focus();
 }
+video.addEventListener("webkitbeginfullscreen", () => {
+  nativeFullscreen = true;
+});
+video.addEventListener("webkitendfullscreen", () => {
+  nativeFullscreen = false;
+  fitViewport();
+  applySpeed();
+  expandedBeforeFocus?.focus();
+});
 $("expand").onclick = expand;
 $("close-expanded").onclick = collapse;
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement && player.classList.contains("expanded"))
     collapse();
 });
+const showInstall = () => $("install-guide").showModal();
+$("install-open").hidden = !appleMobile || standalone();
+$("install-player").hidden = !appleMobile || standalone();
+$("install-open").onclick = $("install-player").onclick = showInstall;
+$("install-close").onclick = $("install-done").onclick = () =>
+  $("install-guide").close();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (!$("speed-panel").hidden) {
@@ -999,6 +1195,14 @@ window.addEventListener("pagehide", () => {
   stopProbe();
 });
 $("help-open").onclick = () => $("help").showModal();
+$("copy-error").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($("error-diagnostics").textContent);
+    toast("Подробности скопированы. Ссылки на ваши видео в них нет.");
+  } catch {
+    toast("Выделите и скопируйте текст подробностей ошибки.");
+  }
+};
 $("help-close").onclick = $("help-done").onclick = () => $("help").close();
 $("clear-history").onclick = () => $("clear-dialog").showModal();
 $("clear-cancel").onclick = () => $("clear-dialog").close();

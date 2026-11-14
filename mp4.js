@@ -101,11 +101,19 @@ export async function inspectRemoteMP4(href, size, signal) {
       headers: { Range: `bytes=${start}-${Math.min(end, size - 1)}` },
       credentials: "omit",
       referrerPolicy: "no-referrer",
+      // Metadata parsing requires a fresh, exact range, including after a revisit.
+      cache: "no-store",
       signal,
     });
     if (response.status !== 206) {
       await response.body?.cancel();
-      throw new Error("Диск не разрешил чтение части видео.");
+      const error = new Error(
+        response.status === 429
+          ? "Яндекс Диск ограничил запросы. Подождите немного и повторите попытку."
+          : "Не удалось прочитать заголовок видео с Диска. Повторите попытку.",
+      );
+      error.status = response.status;
+      throw error;
     }
     const expected = Math.min(end, size - 1) - start + 1;
     const reader = response.body.getReader();
