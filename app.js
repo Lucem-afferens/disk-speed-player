@@ -9,7 +9,7 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261115.3";
+} from "./core.js?v=20261115.4";
 import {
   VERSION,
   compatibleSource,
@@ -17,8 +17,8 @@ import {
   releaseSource,
   clearSources,
   streamFailure,
-} from "./compatibility.js?v=20261115.3";
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.3";
+} from "./compatibility.js?v=20261115.4";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.4";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
@@ -70,6 +70,54 @@ let dragging = false,
   playerReady = false,
   expandedBeforeFocus = null;
 let pageActive = true;
+let restoringSession = false,
+  sessionTimer;
+const SESSION_KEY = PREFIX + "session";
+const resetStamp = () => store.get("reset", null)?.id || null;
+let activeResetStamp = resetStamp();
+function saveSession() {
+  if (!source || restoringSession) return;
+  try {
+    sessionStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({
+        version: 1,
+        source: linkFor(source, { path: source.path }),
+        path: folderPath,
+        stack: folderStack,
+        currentPath: current?.item.path || null,
+        currentKey: current?.key || null,
+        position: playerReady
+          ? video.currentTime
+          : metadataTarget?.position || 0,
+        filter: $("filter").value,
+        unwatchedOnly: $("unwatched-only").checked,
+        scrollY: window.scrollY,
+        listScroll: $("playlist").scrollTop,
+        resetStamp: activeResetStamp,
+      }),
+    );
+  } catch {
+    /* A storage restriction must not interrupt playback. */
+  }
+}
+function readSession() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY));
+    if (!saved || saved.version !== 1 || saved.resetStamp !== resetStamp())
+      return null;
+    const origin = parseLink(saved.source);
+    if (
+      typeof saved.path !== "string" ||
+      !Array.isArray(saved.stack) ||
+      !saved.stack.every((path) => typeof path === "string")
+    )
+      return null;
+    return { ...saved, origin };
+  } catch {
+    return null;
+  }
+}
 const appleMobile =
   /iPhone|iPad|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -121,6 +169,7 @@ function savePosition(force = false) {
     position: video.currentTime,
     duration: Number.isFinite(video.duration) ? video.duration : undefined,
   });
+  saveSession();
 }
 async function api(endpoint, params, signal) {
   const timeout = new AbortController();
@@ -217,13 +266,26 @@ async function hrefFor(origin, item, signal) {
     (await api("public/resources/download", params, signal)).href,
   );
 }
-async function loadSource(origin, path = origin.path, stack = []) {
+async function loadSource(
+  origin,
+  path = origin.path,
+  stack = [],
+  restored = null,
+) {
   if (clearing) return;
   resetSession();
+  restoringSession = Boolean(restored);
   store.set("source", "");
   const controller = new AbortController();
   loadingController = controller;
   $("cancel-load").hidden = false;
+  $("empty").hidden = true;
+  showLoading(
+    true,
+    restored
+      ? "Восстанавливаем открытое видео…"
+      : "Загружаем папку и первое видео…",
+  );
   notice("Получаем список с Яндекс Диска…");
   try {
     const data = await resource(origin, path, controller.signal);
@@ -247,8 +309,9 @@ async function loadSource(origin, path = origin.path, stack = []) {
     folderStack = stack;
     document.body.classList.add("has-source");
     store.set("source", linkFor(origin, { path: origin.path }));
-    $("filter").value = "";
-    $("unwatched-only").checked = false;
+    $("filter").value =
+      typeof restored?.filter === "string" ? restored.filter : "";
+    $("unwatched-only").checked = restored?.unwatchedOnly === true;
     $("folder-name").textContent = folderName;
     $("folder-nav").hidden = data.type !== "dir";
     $("folder-back").disabled = !stack.length;
@@ -260,7 +323,32 @@ async function loadSource(origin, path = origin.path, stack = []) {
         : "",
     );
     renderList();
-    if (items.length) await openVideo(items[0], false);
+    const first =
+      items.find((item) => item.path === restored?.currentPath) || items[0];
+    const opening = first
+      ? openVideo(
+          first,
+          false,
+          restored?.currentKey === entryKey(first) ? restored.position : null,
+        )
+      : null;
+    if (!first) {
+      showLoading(false);
+      $("empty").hidden = false;
+    }
+    if (restored) {
+      // Restore the viewport as soon as the list is laid out, without waiting
+      // for the media network request or pulling the reader back to the player.
+      const generation = mediaGeneration;
+      requestAnimationFrame(() => {
+        if (generation !== mediaGeneration) return;
+        $("playlist").scrollTop = Number(restored.listScroll) || 0;
+        window.scrollTo(0, Number(restored.scrollY) || 0);
+        restoringSession = false;
+        saveSession();
+      });
+    } else saveSession();
+    await opening;
   } catch (error) {
     if (!controller.signal.aborted && loadingController === controller)
       notice(error.message, true);
@@ -270,6 +358,10 @@ async function loadSource(origin, path = origin.path, stack = []) {
       $("open-source").disabled = false;
       $("open-source").innerHTML = `Открыть ${svg("arrow")}`;
       $("cancel-load").hidden = true;
+      if (!current) {
+        showLoading(false);
+        $("empty").hidden = false;
+      }
     }
   }
 }
@@ -297,21 +389,24 @@ function renderList() {
     scroll = list.scrollTop;
   const query = $("filter").value.toLocaleLowerCase().trim(),
     onlyNew = $("unwatched-only").checked;
-  const fragment = document.createDocumentFragment();
-  let count = 0;
+  const previous = new Map(
+    [...list.children].map((row) => [row.dataset.key, row]),
+  );
+  const rows = [];
   for (const folder of folders) {
     if (query && !folder.name.toLocaleLowerCase().includes(query)) continue;
-    const row = document.createElement("div");
-    row.className = "playlist-item folder-row";
-    const button = document.createElement("button");
-    button.className = "item-open";
-    button.innerHTML = `<span class="item-number">${svg("folder")}</span><span class="item-details"><span class="item-name"></span><span class="item-meta">Открыть папку →</span></span>`;
-    button.querySelector(".item-name").textContent = folder.name;
-    button.onclick = () =>
+    const key = `folder:${source.identity}:${folder.path}`;
+    let row = previous.get(key);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "playlist-item folder-row";
+      row.dataset.key = key;
+      row.innerHTML = `<button class="item-open"><span class="item-number">${svg("folder")}</span><span class="item-details"><span class="item-name"></span><span class="item-meta">Открыть папку →</span></span></button>`;
+    }
+    row.querySelector(".item-name").textContent = folder.name;
+    row.querySelector(".item-open").onclick = () =>
       loadSource(source, folder.path, [...folderStack, folderPath]);
-    row.append(button);
-    fragment.append(row);
-    count++;
+    rows.push(row);
   }
   items.forEach((item, index) => {
     const key = entryKey(item),
@@ -322,24 +417,32 @@ function renderList() {
       (onlyNew && saved.watched)
     )
       return;
-    const row = document.createElement("div");
+    let row = previous.get(key);
+    if (!row) {
+      row = document.createElement("div");
+      row.dataset.key = key;
+      row.innerHTML = `<button class="item-open"><span class="item-number"></span><span class="item-details"><span class="item-name"></span><span class="item-meta"><span class="item-duration"></span><span class="item-size"></span><span class="item-status"></span></span></span></button><button class="item-mark">${svg("check")}</button><span class="item-progress" hidden></span>`;
+    }
     row.className =
       "playlist-item" +
       (selected ? " current" : "") +
       (saved.watched ? " watched" : "");
-    row.dataset.key = key;
-    const open = document.createElement("button");
-    open.className = "item-open";
-    open.setAttribute("aria-current", selected ? "true" : "false");
-    open.innerHTML = `<span class="item-number">${selected ? svg("play") : index + 1}</span><span class="item-details"><span class="item-name"></span><span class="item-meta"><span class="item-duration"></span><span>· ${sizeLabel(item.size || 0)}</span><span class="item-status"></span></span></span>`;
-    open.querySelector(".item-name").textContent = item.name;
-    open.querySelector(".item-duration").textContent = timeLabel(
-      saved.duration,
-    );
-    open.querySelector(".item-duration").title = saved.duration
+    const open = row.querySelector(".item-open"),
+      number = row.querySelector(".item-number");
+    open.setAttribute("aria-current", String(selected));
+    const numberKey = selected ? "playing" : String(index + 1);
+    if (number.dataset.value !== numberKey) {
+      number.innerHTML = selected ? svg("play") : String(index + 1);
+      number.dataset.value = numberKey;
+    }
+    row.querySelector(".item-name").textContent = item.name;
+    row.querySelector(".item-size").textContent =
+      `· ${sizeLabel(item.size || 0)}`;
+    row.querySelector(".item-duration").textContent = timeLabel(saved.duration);
+    row.querySelector(".item-duration").title = saved.duration
       ? "Длительность видео"
       : "Длительность появится после чтения видео";
-    open.querySelector(".item-status").textContent = saved.watched
+    row.querySelector(".item-status").textContent = saved.watched
       ? "✓ Просмотрено"
       : saved.started
         ? "◐ Начат просмотр"
@@ -349,9 +452,7 @@ function renderList() {
         togglePlay();
       else openVideo(item, true);
     };
-    const mark = document.createElement("button");
-    mark.className = "item-mark";
-    mark.innerHTML = svg("check");
+    const mark = row.querySelector(".item-mark");
     mark.setAttribute("aria-pressed", String(!!saved.watched));
     mark.setAttribute(
       "aria-label",
@@ -360,29 +461,32 @@ function renderList() {
         : "Отметить просмотренным: ") + item.name,
     );
     mark.onclick = () => toggleWatched(key);
-    row.append(open, mark);
-    if (saved.duration && saved.position) {
-      const bar = document.createElement("span");
-      bar.className = "item-progress";
+    const bar = row.querySelector(".item-progress");
+    bar.hidden = !(saved.duration && saved.position);
+    if (!bar.hidden)
       bar.style.width =
         Math.min(100, (saved.position / saved.duration) * 100) + "%";
-      row.append(bar);
-    }
-    fragment.append(row);
-    count++;
+    rows.push(row);
   });
-  if (!count) {
-    const empty = document.createElement("div");
+  if (!rows.length) {
+    const empty = previous.get("empty") || document.createElement("div");
     empty.className = "list-empty";
+    empty.dataset.key = "empty";
     empty.textContent =
       items.length || folders.length
         ? "Нет подходящих видео. Измените фильтр."
         : source
           ? "В этой папке нет видео."
           : "Вставьте ссылку, чтобы открыть видео или папку.";
-    fragment.append(empty);
+    rows.push(empty);
   }
-  list.replaceChildren(fragment);
+  // Keep existing rows attached during metadata/progress updates: replacing the
+  // subtree interrupts focus and an ongoing touch scroll in mobile browsers.
+  rows.forEach((row, index) => {
+    if (list.children[index] !== row)
+      list.insertBefore(row, list.children[index] || null);
+  });
+  while (list.children.length > rows.length) list.lastElementChild.remove();
   list.scrollTop = scroll;
   const watched = items.filter((item) => record(entryKey(item)).watched).length;
   $("list-summary").textContent = items.length
@@ -390,6 +494,7 @@ function renderList() {
     : "Отметки и позиции сохраняются на этом устройстве.";
   updateCurrentActions();
 }
+
 function toggleWatched(key) {
   const next = !record(key).watched;
   updateRecord(key, { watched: next });
@@ -410,8 +515,10 @@ function updateCurrentActions() {
   const index = currentIndex();
   $("next-video").disabled = index < 0 || index >= items.length - 1;
 }
-$("filter").oninput = renderList;
-$("unwatched-only").onchange = renderList;
+$("filter").oninput = $("unwatched-only").onchange = () => {
+  renderList();
+  saveSession();
+};
 $("mark-watched").onclick = () => current && toggleWatched(current.key);
 $("next-video").onclick = () => {
   const index = currentIndex();
@@ -432,6 +539,11 @@ function showLoading(visible, text = "Открываем видео…") {
 // folder, an API error or a late Safari recovery must leave the old source gone.
 function resetSession() {
   savePosition(true);
+  clearTimeout(sessionTimer);
+  restoringSession = false;
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {}
   loadingController?.abort();
   loadingController = null;
   mediaController?.abort();
@@ -606,6 +718,7 @@ async function openVideo(
   metadataTarget = {
     position: resumeOverride ?? record(current.key).position ?? 0,
     autoplay,
+    exactPosition: resumeOverride !== null,
   };
   $("video-name").textContent = item.name;
   $("video-name").title = item.name;
@@ -621,6 +734,7 @@ async function openVideo(
   controlsEnabled(false);
   showLoading(true);
   renderList();
+  saveSession();
   try {
     const href = await hrefFor(current.origin, item, controller.signal);
     if (generation !== mediaGeneration) return;
@@ -701,14 +815,27 @@ video.addEventListener("loadedmetadata", () => {
   $("duration").textContent = timeLabel(video.duration);
   const target = metadataTarget;
   metadataTarget = null;
-  if (target?.position > 0 && target.position < video.duration - 2)
+  if (
+    target?.position > 0 &&
+    target.position < video.duration - (target.exactPosition ? 0 : 2)
+  )
     video.currentTime = target.position;
+  else {
+    // iOS can stop at HAVE_METADATA with a black video surface. A tiny seek
+    // requests a decoded first frame without autoplay or a hidden video decoder.
+    video.currentTime = Math.min(0.001, video.duration / 2);
+  }
   applySpeed();
   renderList();
-  showLoading(false);
-  $("center-play").hidden = false;
+  showLoading(video.readyState < 2, "Загружаем первый кадр…");
+  $("center-play").hidden = video.readyState < 2;
   if (target?.autoplay) play();
   scheduleProbe();
+});
+video.addEventListener("loadeddata", () => {
+  if (!current || !playerReady) return;
+  showLoading(false);
+  $("center-play").hidden = !video.paused || !$("video-error").hidden;
 });
 video.addEventListener("play", () => {
   if (current) current.wasPlaying = true;
@@ -732,7 +859,7 @@ video.addEventListener("pause", () => {
   $("play").innerHTML = svg("play");
   $("play").setAttribute("aria-label", "Воспроизвести");
   $("center-play").hidden = !playerReady || !$("video-error").hidden;
-  showLoading(false);
+  if (playerReady) showLoading(false);
   savePosition(true);
   tick = 0;
   scheduleProbe();
@@ -798,7 +925,7 @@ video.addEventListener("error", async () => {
       const url = await prepareCompatible(current.originalHref, generation);
       if (generation !== mediaGeneration) return;
       if (url) {
-        metadataTarget = { position, autoplay };
+        metadataTarget = { position, autoplay, exactPosition: true };
         current.handlingError = false;
         attachMedia(url, generation);
         return;
@@ -1169,16 +1296,15 @@ document.addEventListener("keydown", (event) => {
     expand();
   }
 });
-// Read one metadata stream at a time, only while the main player is paused.
-// Cancelling removes src immediately; we never prefetch video files or use a proxy.
+// Read bounded MP4 headers sequentially while paused. No hidden video elements:
+// allocating extra mobile decoders can compete with the visible player's memory.
 let probeTimer = null,
   probed = new Set();
 function stopProbe() {
   clearTimeout(probeTimer);
-  if (probe) {
-    probe.cancel();
-    probe = null;
-  }
+  const active = probe;
+  probe = null;
+  active?.cancel();
 }
 function scheduleProbe() {
   clearTimeout(probeTimer);
@@ -1189,6 +1315,8 @@ async function probeDuration() {
   if (!source || !pageActive || !video.paused || !playerReady || probe) return;
   const item = items.find(
     (x) =>
+      (/\.(mp4|mov|m4v)$/i.test(x.name) ||
+        /^(video\/(mp4|quicktime|x-m4v))$/.test(x.mime_type || "")) &&
       !record(entryKey(x)).duration &&
       !probed.has(entryKey(x)) &&
       entryKey(x) !== current?.key,
@@ -1196,60 +1324,29 @@ async function probeDuration() {
   if (!item) return;
   const origin = { ...source },
     key = entryKey(item),
-    controller = new AbortController(),
-    element = document.createElement("video");
-  let finished = false,
-    timer;
-  const finish = (success = false) => {
-    if (finished) return;
-    finished = true;
-    clearTimeout(timer);
-    controller.abort();
-    element.removeAttribute("src");
-    element.load();
-    if (probe?.key === key) probe = null;
-    if (success) probed.add(key);
-    scheduleProbe();
-  };
-  probe = { key, cancel: () => finish(false) };
-  element.preload = "metadata";
-  element.muted = true;
-  element.playsInline = true;
-  element.onloadedmetadata = () => {
-    if (finished) return;
-    if (Number.isFinite(element.duration) && element.duration > 0) {
-      updateRecord(key, { duration: element.duration });
-      renderList();
-    }
-    finish(true);
-  };
-  element.onerror = async () => {
-    try {
-      const info = await inspectRemoteMP4(
-        element.src,
-        item.size,
-        controller.signal,
-      );
-      if (!finished && info.duration) {
-        updateRecord(key, { duration: info.duration });
-        renderList();
-      }
-    } catch {
-    } finally {
-      finish(true);
-    }
-  };
-  timer = setTimeout(() => finish(true), 10000);
+    controller = new AbortController();
+  const active = { key, cancel: () => controller.abort() };
+  probe = active;
+  const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const href = await hrefFor(origin, item, controller.signal);
-    if (!finished) {
-      element.src = href;
-      element.load();
+    const info = await inspectRemoteMP4(href, item.size, controller.signal);
+    if (!controller.signal.aborted && probe === active && info.duration) {
+      updateRecord(key, { duration: info.duration });
+      renderList();
     }
   } catch {
-    if (!finished) finish(true);
+    /* Duration is optional; opening the video remains available. */
+  } finally {
+    clearTimeout(timer);
+    if (probe === active) {
+      probe = null;
+      probed.add(key);
+      scheduleProbe();
+    }
   }
 }
+
 document.addEventListener("visibilitychange", () => {
   pageActive = !document.hidden;
   tick = 0;
@@ -1260,7 +1357,20 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   savePosition(true);
+  saveSession();
   stopProbe();
+});
+function rememberScroll() {
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(saveSession, 100);
+}
+window.addEventListener("scroll", rememberScroll, { passive: true });
+$("playlist").addEventListener("scroll", rememberScroll, { passive: true });
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted) return;
+  const reset = store.get("reset", null);
+  if (reset?.id && reset.id !== activeResetStamp) receiveReset(reset);
+  fitViewport();
 });
 $("help-open").onclick = () => $("help").showModal();
 $("copy-error").onclick = async () => {
@@ -1273,7 +1383,7 @@ $("copy-error").onclick = async () => {
 };
 $("help-close").onclick = $("help-done").onclick = () => $("help").close();
 let clearing = false;
-const resetIds = new Set();
+const resetIds = new Set(activeResetStamp ? [activeResetStamp] : []);
 function showClearDialog(forgetHistory = false) {
   $("clear-saved-history").checked = forgetHistory;
   $("clear-dialog").showModal();
@@ -1286,6 +1396,7 @@ function receiveReset({ id, forgetHistory = false }) {
   resetIds.add(id);
   if (resetIds.size > 100) resetIds.delete(resetIds.values().next().value);
   resetSession();
+  activeResetStamp = id;
   if (forgetHistory) {
     history = {};
     persist();
@@ -1342,3 +1453,13 @@ for (const dialog of document.querySelectorAll("dialog"))
         dialog.close();
     }
   });
+const savedSession = readSession();
+if (savedSession) {
+  $("source").value = savedSession.source;
+  loadSource(
+    savedSession.origin,
+    savedSession.path,
+    savedSession.stack,
+    savedSession,
+  );
+}

@@ -75,7 +75,9 @@ try {
           return route.fulfill({ status: 404, json: { error: "not_found" } });
         if (url.pathname.endsWith("/download"))
           return route.fulfill({
-            json: { href: `https://storage.yandex.net/${id}/camera` },
+            json: {
+              href: `https://storage.yandex.net/${id}${url.searchParams.get("path") || "/camera"}`,
+            },
           });
         const item = {
           type: "file",
@@ -89,8 +91,17 @@ try {
             type: "dir",
             name: `Folder ${id}`,
             _embedded: {
-              items: id === "empty" ? [] : [item],
-              total: id === "empty" ? 0 : 1,
+              items:
+                id === "empty"
+                  ? []
+                  : id === "many"
+                    ? Array.from({ length: 70 }, (_, i) => ({
+                        ...item,
+                        name: `Camera ${String(i).padStart(2, "0")}`,
+                        path: `/camera${i}`,
+                      }))
+                    : [item],
+              total: id === "empty" ? 0 : id === "many" ? 70 : 1,
             },
           },
         });
@@ -167,6 +178,7 @@ try {
       await open("slow");
       await slow.entered.promise;
       await empty();
+      assert.equal(await page.locator("#loading-video").isVisible(), true);
       await open("B");
       await ready("B");
       slow.finish.resolve();
@@ -221,6 +233,153 @@ try {
       await empty();
       await open("B");
       await ready("B");
+      // Opening a folder must decode a visible first frame without pressing Play.
+      await open("many");
+      await ready("many");
+      await page.waitForFunction(
+        () => document.querySelector("#video").readyState >= 2,
+      );
+      assert.equal(
+        await page.locator("#video").evaluate((v) => v.paused),
+        true,
+      );
+      assert.equal(
+        await page.locator("#video").evaluate((v) => v.videoWidth),
+        64,
+      );
+      await page.evaluate(() => {
+        window.hiddenVideoCreations = 0;
+        const create = document.createElement.bind(document);
+        document.createElement = (tag, ...args) => {
+          if (tag.toLowerCase() === "video") window.hiddenVideoCreations++;
+          return create(tag, ...args);
+        };
+        window.retainedRow = document.querySelectorAll(".item-open")[35];
+        retainedRow.focus({ preventScroll: true });
+        document.querySelector("#playlist").scrollTop = 1800;
+        scrollTo(0, 700);
+      });
+      const beforeScroll = await page.evaluate(() => ({
+        y: scrollY,
+        list: document.querySelector("#playlist").scrollTop,
+        src: document.querySelector("#video").src,
+      }));
+      await page.waitForFunction(
+        () =>
+          document.querySelectorAll(".item-duration")[3].textContent !== "—",
+      );
+      const afterScroll = await page.evaluate(() => ({
+        y: scrollY,
+        list: document.querySelector("#playlist").scrollTop,
+        src: document.querySelector("#video").src,
+      }));
+      assert.deepEqual(afterScroll, beforeScroll);
+      assert.equal(
+        await page.evaluate(
+          () =>
+            retainedRow.isConnected && document.activeElement === retainedRow,
+        ),
+        true,
+      );
+      assert.equal(await page.evaluate(() => hiddenVideoCreations), 0);
+      // Preserve a non-first selected video, seek position, filter and both scrolls.
+      await page.locator(".item-open").nth(7).click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#video").src.endsWith("/camera7") &&
+          !document.querySelector("#video").paused,
+      );
+      await page.locator("#play").click();
+      await page.locator("#video").evaluate((v) => {
+        v.currentTime = 3;
+      });
+      await page.waitForFunction(
+        () => !document.querySelector("#video").seeking,
+      );
+      await page.locator("#filter").fill("Camera");
+      await page.locator("#speed").click();
+      await page.locator('[data-rate="2"]').click();
+      await page.evaluate(() => {
+        document.querySelector("#playlist").scrollTop = 1400;
+        scrollTo(0, 700);
+      });
+      await page.waitForFunction(() => {
+        const saved = JSON.parse(
+          sessionStorage.getItem("disk-play:v1:session"),
+        );
+        return (
+          saved?.currentPath === "/camera7" &&
+          saved.position >= 2.99 &&
+          saved.listScroll === 1400 &&
+          saved.scrollY === scrollY
+        );
+      });
+      const snapshot = await page.evaluate(() =>
+        JSON.parse(sessionStorage.getItem("disk-play:v1:session")),
+      );
+      await page.reload();
+      await ready("many");
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#video").readyState >= 2 &&
+          !document.querySelector("#video").seeking,
+      );
+      assert.equal(await page.locator(".item-open").count(), 70);
+      assert.equal(await page.locator("#video-name").innerText(), "Camera 07");
+      assert.equal(
+        await page.locator("#video").evaluate((v) => v.paused),
+        true,
+      );
+      assert.ok(
+        Math.abs(
+          (await page.locator("#video").evaluate((v) => v.currentTime)) - 3,
+        ) < 0.05,
+      );
+      assert.equal(await page.locator("#filter").inputValue(), "Camera");
+      assert.match(await page.locator("#speed").innerText(), /2×/);
+      assert.deepEqual(
+        await page.evaluate(() => ({
+          y: scrollY,
+          list: document.querySelector("#playlist").scrollTop,
+        })),
+        { y: snapshot.scrollY, list: snapshot.listScroll },
+      );
+      // Delayed notification of a reset that predates this reload is harmless.
+      await page.evaluate(() => {
+        const detail = JSON.parse(localStorage.getItem("disk-play:v1:reset"));
+        navigator.serviceWorker.dispatchEvent(
+          new MessageEvent("message", {
+            data: { type: "disk-play-cleared", detail },
+          }),
+        );
+        dispatchEvent(new CustomEvent("disk-play-cleared", { detail }));
+      });
+      assert.equal(await page.locator(".item-open").count(), 70);
+      assert.equal(await page.locator("#video-name").innerText(), "Camera 07");
+      await page.evaluate(() => {
+        dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+        dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      });
+      assert.equal(await page.locator(".item-open").count(), 70);
+      await clear();
+      assert.equal(
+        await page.evaluate(() =>
+          sessionStorage.getItem("disk-play:v1:session"),
+        ),
+        null,
+      );
+      await page.reload();
+      await empty();
+      // An old suspended tab must not restore a session cleared in another tab.
+      await page.evaluate(
+        (saved) =>
+          sessionStorage.setItem("disk-play:v1:session", JSON.stringify(saved)),
+        snapshot,
+      );
+      await page.reload();
+      await empty();
+      await open("B");
+      await ready("B");
       const second = await context.newPage();
       await second.goto(base);
       await open("C", second);
@@ -228,7 +387,7 @@ try {
       // A real worker + real IndexedDB, also when this page did not use HEVC.
       await page.evaluate(async () => {
         const reg = await navigator.serviceWorker.register(
-          "./stream-worker.js?v=20261115.3",
+          "./stream-worker.js?v=20261115.4",
           { scope: "./" },
         );
         await navigator.serviceWorker.ready;
@@ -238,7 +397,7 @@ try {
               once: true,
             }),
           );
-        const mod = await import("./compatibility.js?v=20261115.3");
+        const mod = await import("./compatibility.js?v=20261115.4");
         const result = await mod.compatibleSource(
           "https://storage.yandex.net/test",
           16,
@@ -297,7 +456,7 @@ try {
       }
       assert.deepEqual(errors, []);
       console.log(
-        `${name}: source replacement, empty/error folders, late responses, reset, real worker/IndexedDB, multi-tab history reset and mobile layout passed`,
+        `${name}: source replacement, empty/error folders, late responses, reset, real worker/IndexedDB, multi-tab history reset, first frame, stable scrolling, session restoration and mobile layout passed`,
       );
       await context.close();
     } finally {

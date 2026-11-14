@@ -1,6 +1,6 @@
 // Runs entirely on the viewer's device. Persists only expiring source metadata.
-importScripts("./stream-store.js?v=20261115.3");
-const VERSION = "20261115.3",
+importScripts("./stream-store.js?v=20261115.4");
+const VERSION = "20261115.4",
   sources = new Map(),
   renewals = new Map(),
   failures = new Map();

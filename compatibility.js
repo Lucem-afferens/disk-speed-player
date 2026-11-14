@@ -1,6 +1,6 @@
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.3";
-import "./stream-store.js?v=20261115.3";
-export const VERSION = "20261115.3";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.4";
+import "./stream-store.js?v=20261115.4";
+export const VERSION = "20261115.4";
 const sources = new Map(),
   inspections = new Map(),
   errors = new Map();
@@ -8,6 +8,12 @@ let registration = null,
   sourceEpoch = 0;
 const resetKey = "disk-play:v1:reset";
 const resetIds = new Set();
+// A queued worker message may arrive after this tab has reloaded and opened a
+// new source. The reset already recorded before startup must not run again.
+try {
+  const previousReset = JSON.parse(localStorage.getItem(resetKey));
+  if (typeof previousReset?.id === "string") resetIds.add(previousReset.id);
+} catch {}
 let resetChannel;
 try {
   resetChannel = new BroadcastChannel("disk-play-reset");
