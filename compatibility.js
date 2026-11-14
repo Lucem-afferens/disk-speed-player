@@ -5,8 +5,13 @@ let registration = null;
 // after suspension without putting signed URLs into persistent storage or URLs.
 if ("serviceWorker" in navigator)
   navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type === "disk-play-source")
-      event.ports[0]?.postMessage(sources.get(event.data.token) || null);
+    if (event.data?.type === "disk-play-source") {
+      const entry = sources.get(event.data.token);
+      // Renew the local worker lease while this tab still owns the source.
+      // This does not extend the lifetime of the signed Yandex URL itself.
+      if (entry) entry.expires = Date.now() + 3600000;
+      event.ports[0]?.postMessage(entry || null);
+    }
   });
 async function worker() {
   if (!("serviceWorker" in navigator))
