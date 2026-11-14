@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#123e36">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; worker-src 'self'; connect-src 'self' https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; media-src 'self' https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>Disk Play — видео в вашем темпе</title>
+  <meta name="description" content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра.">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 4 6 8H3v8h3l5 4zM16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 4 6 8H3v8h3l5 4zM16 9l6 6m0-6-6 6"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h6l2 3h10v12H3z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M7 3v5H2m1-1a9 9 0 1 1-1 7"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M17 3v5h5m-1-1a9 9 0 1 0 1 7"/></symbol>
+  </defs></svg>
+  <header class="site-header"><a class="brand" href="./" aria-label="Disk Play — главная"><img src="./icon.svg" width="34" height="34" alt=""><span>disk<span class="brand-light">play</span></span></a><span class="header-note"><span class="live-dot"></span>С Диска прямо на устройство</span><button id="help-open" class="text-button" aria-haspopup="dialog">Как это работает</button></header>
+  <main>
+    <section class="intro" aria-labelledby="page-title"><div><p class="eyebrow">ВАША ССЫЛКА. ВАШ ТЕМП.</p><h1 id="page-title">Смотрите быстрее.<br class="mobile-break"> Управляйте проще.</h1></div><p class="intro-note">Одна ссылка — весь плейлист.<br>Без установки и регистрации.</p></section>
+    <form id="source-form" class="source-form"><label for="source">Ссылка Яндекс Диска на видео или папку</label><div class="source-row"><input id="source" type="url" placeholder="https://disk.yandex.ru/d/…" autocomplete="off" autocapitalize="off" spellcheck="false" required><button id="open-source" class="primary" type="submit">Открыть <svg><use href="#i-arrow"/></svg></button></div><div class="source-foot"><span>Публичная ссылка с разрешённым скачиванием</span><button id="cancel-load" class="text-button" type="button" hidden>Отменить загрузку списка</button></div></form>
+    <div id="source-status" class="notice" role="status" hidden></div>
+    <section class="workspace" aria-label="Плеер и список видео">
+      <div class="viewer-column">
+        <div id="player" class="player" aria-label="Видеоплеер">
+          <div class="player-heading"><div><span id="video-index" class="overline">ГОТОВ К ПРОСМОТРУ</span><h2 id="video-name">Ваше видео будет здесь</h2></div><button id="close-expanded" class="icon-button" aria-label="Свернуть плеер" hidden><svg><use href="#i-close"/></svg></button></div>
+          <div class="screen" id="screen"><video id="video" playsinline webkit-playsinline preload="metadata" disablepictureinpicture aria-label="Текущее видео"></video><div id="empty" class="empty"><div class="empty-mark"><svg><use href="#i-play"/></svg></div><h3>Начните с одной ссылки</h3><p>Вставьте ссылку выше.<br>Выберите видео и удобную скорость.</p></div><button id="center-play" class="center-play" aria-label="Воспроизвести видео" hidden><svg><use href="#i-play"/></svg></button><div id="loading-video" class="video-loading" role="status" hidden><span class="spinner"></span><span id="loading-text">Открываем видео…</span></div><div id="video-error" class="video-error" role="alert" hidden><p id="video-error-text"></p><button id="retry-video" class="primary">Попробовать ещё раз</button><a id="disk-link" target="_blank" rel="noopener noreferrer">Открыть на Диске ↗</a></div></div>
+          <div id="speed-panel" class="speed-panel" role="group" aria-label="Скорость воспроизведения" hidden><div class="panel-title"><strong>Скорость просмотра</strong><button id="speed-close" class="icon-button" aria-label="Закрыть выбор скорости"><svg><use href="#i-close"/></svg></button></div><div id="speed-options" class="speed-options"></div><p id="speed-explanation">На высоких скоростях звук может отключаться браузером.</p></div>
+          <div class="controls"><div class="timeline"><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Позиция видео" disabled><div class="time-row"><span id="elapsed">0:00</span><span id="duration">—</span></div></div><div class="control-row"><button id="play" class="icon-button main-play" aria-label="Воспроизвести" disabled><svg><use href="#i-play"/></svg></button><button id="back" class="skip-button" aria-label="Назад на 10 секунд" disabled>↶<span>10</span></button><button id="forward" class="skip-button" aria-label="Вперёд на 10 секунд" disabled>↷<span>10</span></button><div class="control-spacer"></div><button id="mute" class="icon-button" aria-label="Выключить звук" disabled><svg><use href="#i-volume"/></svg></button><input id="volume" class="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Громкость" disabled><button id="speed" class="speed-button" aria-expanded="false" aria-controls="speed-panel" aria-label="Скорость: 1×. Изменить">1× <span>⌄</span></button><button id="expand" class="icon-button" aria-label="Развернуть плеер"><svg><use href="#i-expand"/></svg></button></div><div id="playback-note" class="playback-note">Скорость можно менять прямо здесь, рядом со звуком.</div></div>
+        </div>
+        <div class="viewer-footer"><button id="mark-watched" class="text-button" disabled><svg><use href="#i-check"/></svg><span>Отметить просмотренным</span></button><button id="next-video" class="text-button" disabled>Следующее <svg><use href="#i-arrow"/></svg></button></div>
+        <p class="keyboard-hint">Пробел — пауза · ← → — скорость · Shift + ← → — 10 секунд · F — развернуть</p>
+      </div>
+      <aside class="playlist-panel" aria-labelledby="playlist-heading"><div class="playlist-header"><div><p class="eyebrow">ВАШ ПЛЕЙЛИСТ</p><h2 id="playlist-heading">Видео <span id="video-count">0</span></h2></div><label class="autonext"><input id="autonext" type="checkbox" checked><span>Автопереход</span></label></div><div id="folder-nav" class="folder-nav" hidden><button id="folder-back" class="text-button">← Назад</button><span id="folder-name"></span></div><div id="list-tools" class="list-tools" hidden><input id="filter" type="search" placeholder="Найти видео" aria-label="Найти видео по названию"><label class="unwatched-toggle"><input id="unwatched-only" type="checkbox"> Только непросмотренные</label></div><div id="playlist" class="playlist"><div class="list-empty"><svg><use href="#i-folder"/></svg><p>Видео из вашей папки<br>появятся здесь.</p></div></div><div id="list-summary" class="list-summary">Отметки и позиции сохраняются на этом устройстве.</div></aside>
+    </section>
+    <footer class="site-footer"><span>Видео остаются на вашем Диске.</span><button id="clear-history" class="text-button">Очистить историю устройства</button></footer>
+  </main>
+  <dialog id="help"><div class="dialog-heading"><h2>Просто вставьте ссылку</h2><button id="help-close" class="icon-button" aria-label="Закрыть справку"><svg><use href="#i-close"/></svg></button></div><p>На Яндекс Диске нажмите «Поделиться» у видео или папки. Вставьте публичную ссылку в поле и нажмите «Открыть».</p><p>Видео загружается напрямую с Диска в браузер. Наш сервер и аккаунт не нужны. История хранится только в этом браузере.</p><h3>Скорость до 32×</h3><p>Плеер использует доступное браузеру ускорение. Если выбранная скорость выше возможностей браузера, включается обзор с пропуском фрагментов и без звука. Короткие события можно пропустить. Скорость зависит от интернета и устройства.</p><h3>Если видео не открывается</h3><p>Владелец должен разрешить скачивание. Пароль и закрытый доступ не поддерживаются. Для телефонов лучше всего подходят MP4 с H.264; некоторые записи камер требуют предварительной конвертации.</p><p>На iPhone громкость регулируется также кнопками телефона. Кнопка разворота сохраняет наши элементы управления внутри плеера.</p><button id="help-done" class="primary">Понятно</button></dialog>
+  <dialog id="clear-dialog"><h2>Очистить историю?</h2><p>Удалятся сохранённые позиции, отметки и последняя ссылка в этом браузере. Файлы на Яндекс Диске останутся на месте.</p><div class="dialog-actions"><button id="clear-cancel" class="secondary">Отмена</button><button id="clear-confirm" class="primary">Очистить</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript>Для воспроизведения включите JavaScript в браузере.</noscript>
+</body>
+</html>
