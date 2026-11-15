@@ -1,6 +1,6 @@
 // Runs entirely on the viewer's device. Persists only expiring source metadata.
-importScripts("./stream-store.js?v=20261115.4");
-const VERSION = "20261115.4",
+importScripts("./stream-store.js?v=20261115.5");
+const VERSION = "20261115.5",
   sources = new Map(),
   renewals = new Map(),
   failures = new Map();
@@ -94,7 +94,8 @@ async function remember(token, entry, version = epoch) {
     return false;
   }
 }
-self.addEventListener("install", () => self.skipWaiting());
+// Keep updates waiting until existing player windows close. Replacing an
+// active WebKit worker can tear down the context serving a live media response.
 self.addEventListener("activate", (event) =>
   event.waitUntil(
     Promise.all([self.clients.claim(), StreamStore.clean().catch(() => {})]),
@@ -318,7 +319,11 @@ async function stream(event, token) {
       headers: { "Content-Range": `bytes */${entry.size}` },
     });
   const { start } = range;
-  let end = range.end;
+  // WebKit can ask for the entire remainder of a large camera recording.
+  // Send bounded partial ranges, letting the media loader request the next part.
+  let end = range.partial
+    ? Math.min(range.end, start + 4 * 1024 * 1024 - 1)
+    : range.end;
   let headers = {
     "Content-Type": "video/mp4",
     "Accept-Ranges": "bytes",

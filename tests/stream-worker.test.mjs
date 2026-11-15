@@ -397,3 +397,30 @@ test("a registration started during clear is persisted after the clear", async (
   assert.equal((await registration).ok, true);
   assert.deepEqual([...db.keys()], ["next-token"]);
 });
+
+test("large open-ended media ranges are delivered in bounded 4 MiB parts", async () => {
+  const size = 10 * 1024 * 1024,
+    requests = [];
+  const worker = boot({
+    fetcher: async (url, options) => {
+      const range = options.headers.Range;
+      requests.push(range);
+      const [, start, end] = /bytes=(\d+)-(\d+)/.exec(range).map(Number);
+      return new Response(new Uint8Array(end - start + 1), {
+        status: 206,
+        headers: { "Content-Range": `bytes ${start}-${end}/${size}` },
+      });
+    },
+  });
+  await worker.register({ ...makeEntry(), size });
+  const first = await worker.request("bytes=0-");
+  assert.equal(first.headers.get("Content-Range"), `bytes 0-4194303/${size}`);
+  assert.equal((await first.arrayBuffer()).byteLength, 4194304);
+  const next = await worker.request("bytes=4194304-");
+  assert.equal(
+    next.headers.get("Content-Range"),
+    `bytes 4194304-8388607/${size}`,
+  );
+  assert.equal((await next.arrayBuffer()).byteLength, 4194304);
+  assert.deepEqual(requests, ["bytes=0-4194303", "bytes=4194304-8388607"]);
+});

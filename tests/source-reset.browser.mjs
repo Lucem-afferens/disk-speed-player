@@ -18,7 +18,16 @@ const server = createServer(async (req, res) => {
     const path = new URL(req.url, "http://local").pathname;
     const file = new URL("." + (path === "/" ? "/index.html" : path), root);
     if (!file.href.startsWith(root.href)) throw Error("Invalid path");
-    const body = await readFile(file);
+    let body = await readFile(file);
+    if (path === "/stream-worker.js" && req.url.includes("integration-upgrade"))
+      body = Buffer.from(
+        body
+          .toString()
+          .replace(
+            'const VERSION = "20261115.5"',
+            'const VERSION = "test-next"',
+          ),
+      );
     res.writeHead(200, {
       "Content-Type":
         types[file.pathname.split(".").at(-1)] || "application/octet-stream",
@@ -44,6 +53,7 @@ try {
   for (const [name, engine, profile] of [
     ["chromium", chromium, devices["Pixel 7"]],
     ["webkit", webkit, devices["iPhone 13"]],
+    ["webkit-standalone", webkit, devices["iPhone 13"]],
   ]) {
     const browser = await engine.launch({
       headless: true,
@@ -52,6 +62,25 @@ try {
         : {}),
     });
     try {
+      const failedContext = await browser.newContext(profile);
+      const failedPage = await failedContext.newPage();
+      await failedContext.route("**/app.js?*", (route) => route.abort());
+      await failedPage.goto(base);
+      await failedPage.waitForFunction(() =>
+        document.querySelector("#boot-status").classList.contains("error"),
+      );
+      assert.equal(await failedPage.locator("#open-source").isDisabled(), true);
+      assert.match(
+        await failedPage.locator("#boot-message").innerText(),
+        /Не удалось загрузить/,
+      );
+      await failedContext.unroute("**/app.js?*");
+      await failedPage.locator("#boot-status a").click();
+      await failedPage.waitForFunction(
+        () => document.documentElement.dataset.appReady === "true",
+      );
+      assert.equal(await failedPage.locator("#open-source").isEnabled(), true);
+      await failedContext.close();
       const context = await browser.newContext(profile),
         page = await context.newPage(),
         errors = [];
@@ -59,7 +88,16 @@ try {
         p.on("pageerror", (e) => errors.push(e.message)),
       );
       page.on("pageerror", (e) => errors.push(e.message));
+      if (name === "webkit-standalone")
+        await context.addInitScript(() =>
+          Object.defineProperty(navigator, "standalone", { get: () => true }),
+        );
+      let navigations = 0;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) navigations++;
+      });
       const waiting = new Map();
+      let downloadFailure = true;
       await context.route("https://cloud-api.yandex.net/**", async (route) => {
         const url = new URL(route.request().url()),
           id = url.searchParams.get("public_key").split("/").at(-1);
@@ -73,6 +111,15 @@ try {
         }
         if (id === "missing")
           return route.fulfill({ status: 404, json: { error: "not_found" } });
+        if (
+          url.pathname.endsWith("/download") &&
+          id === "download-error" &&
+          downloadFailure
+        )
+          return route.fulfill({
+            status: 429,
+            json: { error: "TooManyRequestsError" },
+          });
         if (url.pathname.endsWith("/download"))
           return route.fulfill({
             json: {
@@ -165,6 +212,18 @@ try {
         );
       };
       await page.goto(base);
+      await page.waitForFunction(
+        () => document.documentElement.dataset.appReady === "true",
+      );
+      await page.locator("#source").fill("это не ссылка");
+      await page.locator("#open-source").click();
+      assert.equal(await page.locator("#source-status").isVisible(), true);
+      assert.equal(
+        await page
+          .locator("#source-status")
+          .evaluate((n) => n.classList.contains("error")),
+        true,
+      );
       await open("A");
       await ready("A");
       await page.locator("#mark-watched").click();
@@ -234,6 +293,12 @@ try {
       await open("B");
       await ready("B");
       // Opening a folder must decode a visible first frame without pressing Play.
+      await open("download-error");
+      await page.locator("#video-error").waitFor({ state: "visible" });
+      assert.equal(await page.locator("#open-source").isEnabled(), true);
+      downloadFailure = false;
+      await page.locator("#retry-video").click();
+      await ready("download-error");
       await open("many");
       await ready("many");
       await page.waitForFunction(
@@ -380,6 +445,115 @@ try {
       await empty();
       await open("B");
       await ready("B");
+      if (name !== "webkit") {
+        const initialNavigations = navigations;
+        await page.locator("#autonext").uncheck();
+        await page.locator("#video").evaluate((v) => {
+          v.loop = true;
+        });
+        await page.locator("#speed").click();
+        await page.locator('[data-rate="1"]').click();
+        await page.locator("#play").click();
+        await page.waitForFunction(
+          () => !document.querySelector("#video").paused,
+        );
+        // Exercise the Home Screen/viewport fullscreen path, not the OS player.
+        await page.locator("#player").evaluate((p) => {
+          p.requestFullscreen = undefined;
+        });
+        await page.locator("#expand").click();
+        const frame = await page.locator("#screen").boundingBox();
+        await page.waitForTimeout(2100);
+        assert.equal(
+          await page
+            .locator("#player")
+            .evaluate((p) => p.classList.contains("controls-hidden")),
+          false,
+        );
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector("#player")
+              .classList.contains("controls-hidden"),
+          null,
+          { timeout: 2000 },
+        );
+        await page.locator(".controls").waitFor({ state: "hidden" });
+        assert.deepEqual(await page.locator("#screen").boundingBox(), frame);
+        await page.touchscreen.tap(
+          frame.x + frame.width / 2,
+          frame.y + frame.height / 2,
+        );
+        await page.locator(".controls").waitFor({ state: "visible" });
+        assert.equal(
+          await page.locator("#video").evaluate((v) => v.paused),
+          false,
+        );
+        await page.locator("#speed").click();
+        await page.waitForTimeout(3300);
+        assert.equal(await page.locator("#speed-panel").isVisible(), true);
+        await page.locator(".controls").waitFor({ state: "visible" });
+        await page.locator('[data-rate="2"]').click();
+        await page.locator("#seek").evaluate((input) => {
+          input.value = "500";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await page.locator("#seek").dispatchEvent("change");
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector("#player")
+              .classList.contains("controls-hidden"),
+          null,
+          { timeout: 4500 },
+        );
+        await page.setViewportSize({ width: 844, height: 390 });
+        assert.equal(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth > innerWidth,
+          ),
+          false,
+        );
+        await page.waitForFunction(
+          () =>
+            Math.abs(
+              document.querySelector("#screen").getBoundingClientRect().height -
+                390,
+            ) < 2,
+        );
+        const landscape = await page.locator("#screen").boundingBox();
+        assert.ok(Math.abs(landscape.height - 390) < 2);
+        await page.touchscreen.tap(landscape.width / 2, landscape.height / 2);
+        await page.locator("#play").click();
+        assert.equal(
+          await page.locator("#video").evaluate((v) => v.paused),
+          true,
+        );
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector("#player")
+              .classList.contains("controls-hidden"),
+          null,
+          { timeout: 4500 },
+        );
+        await page.locator("#center-play").waitFor({ state: "hidden" });
+        await page.touchscreen.tap(landscape.width / 2, landscape.height / 2);
+        assert.equal(
+          await page.locator("#video").evaluate((v) => v.paused),
+          true,
+        );
+        await page.locator("#close-expanded").click();
+        await page.locator(".controls").waitFor({ state: "visible" });
+        assert.equal(navigations, initialNavigations);
+        await page.locator("#video").evaluate((v) => {
+          v.loop = false;
+        });
+        await page.setViewportSize({
+          width: profile.viewport.width,
+          height: profile.viewport.height,
+        });
+      }
       const second = await context.newPage();
       await second.goto(base);
       await open("C", second);
@@ -387,7 +561,7 @@ try {
       // A real worker + real IndexedDB, also when this page did not use HEVC.
       await page.evaluate(async () => {
         const reg = await navigator.serviceWorker.register(
-          "./stream-worker.js?v=20261115.4",
+          "./stream-worker.js?v=20261115.5",
           { scope: "./" },
         );
         await navigator.serviceWorker.ready;
@@ -397,7 +571,7 @@ try {
               once: true,
             }),
           );
-        const mod = await import("./compatibility.js?v=20261115.4");
+        const mod = await import("./compatibility.js?v=20261115.5");
         const result = await mod.compatibleSource(
           "https://storage.yandex.net/test",
           16,
@@ -409,6 +583,40 @@ try {
         );
         window.testToken = result.token;
       });
+      const beforeUpgrade = navigations;
+      // Another tab installs a future build while this page remains open.
+      await second.evaluate(async () => {
+        await navigator.serviceWorker.register(
+          "./stream-worker.js?v=integration-upgrade",
+          { scope: "./", updateViaCache: "none" },
+        );
+      });
+      await page.waitForFunction(async () =>
+        (
+          await navigator.serviceWorker.getRegistration()
+        )?.waiting?.scriptURL.includes("integration-upgrade"),
+      );
+      assert.equal(
+        await page.evaluate(() =>
+          navigator.serviceWorker.controller.scriptURL.includes(
+            "integration-upgrade",
+          ),
+        ),
+        false,
+      );
+      await page.evaluate(async () => {
+        const mod = await import("./compatibility.js?v=20261115.5");
+        const result = await mod.compatibleSource(
+          "https://storage.yandex.net/test",
+          16,
+          null,
+          { info: { patches: [4] } },
+        );
+        if (!result?.token)
+          throw Error("Cannot open a new stream after worker upgrade");
+      });
+      assert.equal(navigations, beforeUpgrade);
+      assert.equal(await page.locator(".item-open").count(), 1);
       await clear(true);
       await empty();
       await empty(second);
@@ -454,9 +662,32 @@ try {
         );
         await page.locator("#clear-cancel").click();
       }
+      await page.close();
+      await second.close();
+      const reopened = await context.newPage();
+      await reopened.goto(base);
+      await reopened.waitForFunction(() =>
+        navigator.serviceWorker.controller?.scriptURL.includes(
+          "integration-upgrade",
+        ),
+      );
+      // Fresh UI must also use a newer active worker while its own build waits.
+      await reopened.evaluate(async () => {
+        const mod = await import("./compatibility.js?v=20261115.5");
+        await mod.compatibleSource(
+          "https://storage.yandex.net/test",
+          16,
+          null,
+          { info: { patches: [4] } },
+        );
+        await mod.clearSources({
+          id: crypto.randomUUID(),
+          forgetHistory: false,
+        });
+      });
       assert.deepEqual(errors, []);
       console.log(
-        `${name}: source replacement, empty/error folders, late responses, reset, real worker/IndexedDB, multi-tab history reset, first frame, stable scrolling, session restoration and mobile layout passed`,
+        `${name}: source replacement, empty/error folders, late responses, reset, real worker/IndexedDB, multi-tab history reset, first frame, stable scrolling, session restoration, startup failure/retry, worker upgrades, fullscreen idle controls and mobile layout passed`,
       );
       await context.close();
     } finally {

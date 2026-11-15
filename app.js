@@ -9,7 +9,7 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261115.4";
+} from "./core.js?v=20261115.5";
 import {
   VERSION,
   compatibleSource,
@@ -17,8 +17,9 @@ import {
   releaseSource,
   clearSources,
   streamFailure,
-} from "./compatibility.js?v=20261115.4";
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.4";
+} from "./compatibility.js?v=20261115.5";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.5";
+import { autoHideControls } from "./player-controls.js?v=20261115.5";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
@@ -129,6 +130,20 @@ const standalone = () =>
   navigator.standalone === true ||
   matchMedia("(display-mode: standalone)").matches;
 let nativeFullscreen = false;
+const playerChrome = autoHideControls({
+  player,
+  isExpanded: () =>
+    player.classList.contains("expanded") ||
+    document.fullscreenElement === player,
+  isBlocked: () =>
+    !playerReady ||
+    dragging ||
+    !$("speed-panel").hidden ||
+    !$("video-error").hidden ||
+    document.querySelector("dialog[open]"),
+});
+const recordDiagnostic = (event, data) =>
+  window.diskPlayDiagnostics?.record(event, data);
 const collator = new Intl.Collator("ru", {
   numeric: true,
   sensitivity: "base",
@@ -370,10 +385,12 @@ async function loadSource(
 }
 $("source-form").addEventListener("submit", (event) => {
   event.preventDefault();
+  recordDiagnostic("open-source");
   try {
     const origin = parseLink($("source").value);
     loadSource(origin);
   } catch (error) {
+    recordDiagnostic("invalid-source");
     notice(error.message, true);
     $("source").focus();
   }
@@ -604,6 +621,11 @@ function resetSession() {
   renderList();
 }
 function showVideoError(message, detail = {}) {
+  recordDiagnostic("video-error", {
+    stage: current?.stage || "open",
+    mediaCode: video.error?.code || 0,
+  });
+  playerChrome.show();
   clearTimeout(durationTimer);
   const diagnostic = {
     version: VERSION,
@@ -811,6 +833,7 @@ video.addEventListener("loadedmetadata", () => {
     return;
   clearTimeout(durationTimer);
   playerReady = true;
+  playerChrome.refresh();
   current.stage = "ready";
   $("video-error").hidden = true;
   controlsEnabled(true);
@@ -945,6 +968,7 @@ video.addEventListener("error", async () => {
       source?.identity === current.origin.identity
     ) {
       showLoading(true, "Восстанавливаем соединение с видео…");
+      recordDiagnostic("stream-recovery", { mediaCode: code });
       await openVideo(current.item, autoplay, position, true);
       return;
     }
@@ -1001,6 +1025,7 @@ $("seek").oninput = () => {
 $("seek").onchange = () => {
   seekTo((Number($("seek").value) / 1000) * video.duration);
   dragging = false;
+  playerChrome.show();
 };
 function updateVolume() {
   $("mute").innerHTML = svg(
@@ -1087,6 +1112,7 @@ function speedPanel(open) {
   $("speed-panel").hidden = !open;
   $("speed").setAttribute("aria-expanded", String(open));
   if (open) $("speed-options").querySelector("[aria-pressed=true]")?.focus();
+  playerChrome.show();
 }
 for (const rate of RATES) {
   const button = document.createElement("button");
@@ -1218,6 +1244,7 @@ async function expand() {
   document.body.classList.add("player-expanded");
   $("close-expanded").hidden = false;
   $("expand").setAttribute("aria-label", "Свернуть плеер");
+  playerChrome.show();
   fitViewport();
   try {
     if (player.requestFullscreen) await player.requestFullscreen();
@@ -1238,6 +1265,7 @@ async function collapse() {
   document.body.classList.remove("player-expanded");
   $("close-expanded").hidden = true;
   $("expand").setAttribute("aria-label", "Развернуть плеер");
+  playerChrome.show();
   expandedBeforeFocus?.focus();
 }
 video.addEventListener("webkitbeginfullscreen", () => {
@@ -1375,7 +1403,24 @@ window.addEventListener("pageshow", (event) => {
   if (reset?.id && reset.id !== activeResetStamp) receiveReset(reset);
   fitViewport();
 });
-$("help-open").onclick = () => $("help").showModal();
+$("help-open").onclick = () => {
+  $("session-diagnostics-text").textContent = JSON.stringify(
+    window.diskPlayDiagnostics?.read() || {},
+    null,
+    2,
+  );
+  $("help").showModal();
+};
+$("copy-session-diagnostics").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(
+      $("session-diagnostics-text").textContent,
+    );
+    toast("Диагностика скопирована");
+  } catch {
+    toast("Выделите и скопируйте текст диагностики.");
+  }
+};
 $("copy-error").onclick = async () => {
   try {
     await navigator.clipboard.writeText($("error-diagnostics").textContent);
@@ -1458,6 +1503,7 @@ for (const dialog of document.querySelectorAll("dialog"))
   });
 const savedSession = readSession();
 if (savedSession) {
+  recordDiagnostic("session-restored");
   $("source").value = savedSession.source;
   loadSource(
     savedSession.origin,

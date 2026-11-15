@@ -14,7 +14,7 @@
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="Disk Play" />
-    <link rel="manifest" href="./manifest.webmanifest?v=20261115.4" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20261115.5" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <meta name="referrer" content="no-referrer" />
     <meta
@@ -27,8 +27,12 @@
       content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра."
     />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css?v=20261115.4" />
-    <script type="module" src="./app.js?v=20261115.4"></script>
+    <link rel="stylesheet" href="./style.css?v=20261115.5" />
+    <script
+      defer
+      src="./boot.js?v=20261115.5"
+      data-version="20261115.5"
+    ></script>
   </head>
   <body>
     <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -106,18 +110,23 @@
           Одна ссылка — весь плейлист.<br />Без установки и регистрации.
         </p>
       </section>
-      <form id="source-form" class="source-form">
+      <div id="boot-status" class="notice" role="status">
+        <span id="boot-message">Запускаем плеер…</span>
+        <a href="./" class="text-button">Обновить страницу</a>
+      </div>
+      <form id="source-form" class="source-form" novalidate>
         <label for="source">Ссылка Яндекс Диска на видео или папку</label>
         <div class="source-row">
           <input
             id="source"
+            disabled
             type="url"
             placeholder="https://disk.yandex.ru/d/…"
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"
             required
-          /><button id="open-source" class="primary" type="submit">
+          /><button id="open-source" class="primary" type="submit" disabled>
             Открыть <svg><use href="#i-arrow" /></svg>
           </button>
         </div>
@@ -364,7 +373,7 @@
       <footer class="site-footer">
         <span
           >Видео остаются на вашем Диске.<small class="build-version"
-            >Версия 20261115.4</small
+            >Версия 20261115.5</small
           ></span
         ><button id="clear-history" class="text-button">
           Очистить историю устройства
@@ -409,6 +418,17 @@
         кнопки скорости и убрать панели Safari, добавьте страницу на экран
         «Домой» через меню «Поделиться» и открывайте плеер с этой иконки.
       </p>
+      <details id="session-diagnostics">
+        <summary>Диагностика сеанса</summary>
+        <p>
+          Только события плеера в этой вкладке. Ссылки и имена видео не
+          записываются, данные никуда не отправляются.
+        </p>
+        <pre id="session-diagnostics-text"></pre>
+        <button id="copy-session-diagnostics" class="secondary">
+          Скопировать диагностику
+        </button>
+      </details>
       <button id="help-done" class="primary">Понятно</button>
     </dialog>
     <dialog id="install-guide">

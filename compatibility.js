@@ -1,6 +1,6 @@
-import { inspectRemoteMP4 } from "./mp4.js?v=20261115.4";
-import "./stream-store.js?v=20261115.4";
-export const VERSION = "20261115.4";
+import { inspectRemoteMP4 } from "./mp4.js?v=20261115.5";
+import "./stream-store.js?v=20261115.5";
+export const VERSION = "20261115.5";
 const sources = new Map(),
   inspections = new Map(),
   errors = new Map();
@@ -96,11 +96,15 @@ async function worker() {
         throw error;
       });
   const result = await registration;
-  await activated(result.installing || result.waiting || result.active);
-  if (navigator.serviceWorker.controller?.scriptURL !== script)
+  await activated(result.active || result.installing || result.waiting);
+  // The registration is live: another tab can install a newer build. Reuse
+  // its active worker instead of waiting forever for this page's old build URL.
+  const controlled = () =>
+    result.active && navigator.serviceWorker.controller === result.active;
+  if (!controlled())
     await new Promise((resolve, reject) => {
       const changed = () => {
-        if (navigator.serviceWorker.controller?.scriptURL === script) {
+        if (controlled()) {
           clearTimeout(timer);
           navigator.serviceWorker.removeEventListener(
             "controllerchange",
@@ -116,7 +120,7 @@ async function worker() {
         );
         reject(
           new Error(
-            "Обновление плеера ещё не завершилось. Перезагрузите страницу.",
+            "Не удалось подключить обработчик видео. Повторите попытку.",
           ),
         );
       }, 8000);
@@ -127,8 +131,8 @@ async function worker() {
 }
 export async function inspectSource(href, size, signal, identity) {
   const epoch = sourceEpoch;
-  // Update an already installed worker BEFORE asking for ranges: the old worker
-  // can trigger WebKit's dropped-Range pass-through bug on the first request.
+  // A controller must handle explicit Range forwarding before metadata reads.
+  // Keep using an active worker while an update waits for old windows to close.
   await worker();
   if (signal?.aborted || epoch !== sourceEpoch)
     throw new DOMException("Cancelled", "AbortError");
@@ -236,7 +240,8 @@ export async function clearSources(detail) {
     channel.port1.onmessage = (event) => {
       clearTimeout(timer);
       channel.port1.close();
-      if (event.data?.ok && event.data.version === VERSION) resolve();
+      // The clear protocol is shared by open tabs from different builds.
+      if (event.data?.ok) resolve();
       else
         reject(
           new Error("Не удалось удалить временные данные. Повторите очистку."),
