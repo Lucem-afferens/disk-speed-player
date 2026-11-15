@@ -19,7 +19,7 @@ import {
   streamFailure,
 } from "./compatibility.js?v=20261115.5";
 import { inspectRemoteMP4 } from "./mp4.js?v=20261115.5";
-import { autoHideControls } from "./player-controls.js?v=20261115.5";
+import { autoHideControls, bindPlaybackSpace } from "./player-controls.js?v=20261115.6";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
@@ -1289,6 +1289,7 @@ $("install-player").hidden = !appleMobile || standalone();
 $("install-open").onclick = $("install-player").onclick = showInstall;
 $("install-close").onclick = $("install-done").onclick = () =>
   $("install-guide").close();
+bindPlaybackSpace({ isActive: () => !!current, toggle: togglePlay });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (!$("speed-panel").hidden) {
@@ -1304,10 +1305,6 @@ document.addEventListener("keydown", (event) => {
     event.target.closest("input,textarea,select,[contenteditable=true],dialog")
   )
     return;
-  if (event.code === "Space" && event.target.tagName !== "BUTTON") {
-    event.preventDefault();
-    togglePlay();
-  }
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     event.preventDefault();
     const step = event.key === "ArrowRight" ? 1 : -1;

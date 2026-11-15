@@ -1,3 +1,50 @@
+// Own the entire Space press, including keyup (native buttons activate there).
+// Keep focus and normal Enter activation; only text editing owns its own spaces.
+export function bindPlaybackSpace({ isActive, toggle }) {
+  let held = false;
+  const isSpace = (event) =>
+    event.code === "Space" || event.key === " " || event.key === "Spacebar";
+  function editing(event) {
+    return event.composedPath().some((node) => {
+      if (!(node instanceof Element)) return false;
+      if (
+        node.isContentEditable ||
+        node.matches('textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"]')
+      ) return true;
+      return (
+        node instanceof HTMLInputElement &&
+        !["range", "checkbox", "radio", "button", "submit", "reset"].includes(node.type)
+      );
+    });
+  }
+  function eligible(event) {
+    return (
+      isActive() && !event.isComposing && !event.altKey &&
+      !event.ctrlKey && !event.metaKey && !editing(event)
+    );
+  }
+  function consume(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  document.addEventListener("keydown", (event) => {
+    if (!isSpace(event) || (!held && !eligible(event))) return;
+    consume(event);
+    const firstPress = !held && !event.repeat;
+    held = true;
+    if (firstPress) toggle();
+  }, true);
+  document.addEventListener("keyup", (event) => {
+    if (!isSpace(event) || (!held && !eligible(event))) return;
+    consume(event);
+    held = false;
+  }, true);
+  window.addEventListener("blur", () => { held = false; });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) held = false;
+  });
+}
+
 // Fullscreen chrome follows user activity, never playback timeupdate events.
 export function autoHideControls({
   player,
