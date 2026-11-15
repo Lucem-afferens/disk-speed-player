@@ -9,11 +9,11 @@ export function bindPlaybackSpace({ isActive, toggle }) {
       if (!(node instanceof Element)) return false;
       if (
         node.isContentEditable ||
-        node.matches('textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"]')
+        node.matches('textarea,[role="textbox"],[role="searchbox"]')
       ) return true;
       return (
         node instanceof HTMLInputElement &&
-        !["range", "checkbox", "radio", "button", "submit", "reset"].includes(node.type)
+        ["text", "search", "url", "tel", "email", "password"].includes(node.type)
       );
     });
   }

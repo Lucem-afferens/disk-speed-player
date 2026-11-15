@@ -19,7 +19,7 @@ import {
   streamFailure,
 } from "./compatibility.js?v=20261115.5";
 import { inspectRemoteMP4 } from "./mp4.js?v=20261115.5";
-import { autoHideControls, bindPlaybackSpace } from "./player-controls.js?v=20261115.6";
+import { autoHideControls, bindPlaybackSpace } from "./player-controls.js?v=20261115.7";
 const $ = (id) => document.getElementById(id);
 const video = $("video"),
   player = $("player"),
