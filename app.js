@@ -3,13 +3,14 @@ import {
   parseLink,
   mediaKey,
   isVideo,
+  localCatalog,
   timeLabel,
   sizeLabel,
   safeMediaURL,
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261115.5";
+} from "./core.js?v=20261117.1";
 import {
   VERSION,
   compatibleSource,
@@ -61,6 +62,7 @@ let supported = 1,
   lastAdapt = 0,
   tick = 0;
 let loadingController = null,
+  localUrl = null,
   mediaController = null,
   mediaGeneration = 0,
   metadataTarget = null,
@@ -77,7 +79,7 @@ const SESSION_KEY = PREFIX + "session";
 const resetStamp = () => store.get("reset", null)?.id || null;
 let activeResetStamp = resetStamp();
 function saveSession() {
-  if (!source || restoringSession) return;
+  if (!source || source.local || restoringSession) return;
   try {
     sessionStorage.setItem(
       SESSION_KEY,
@@ -262,6 +264,7 @@ async function resource(origin, path, signal) {
   return { ...data, _embedded: { ...data._embedded, items: list } };
 }
 function linkFor(origin, item) {
+  if (origin?.local) return "";
   const url =
     origin.key +
     (item.path && item.path !== "/"
@@ -274,7 +277,57 @@ function linkFor(origin, item) {
       : "");
   return url;
 }
+function releaseLocalUrl() {
+  if (!localUrl) return;
+  URL.revokeObjectURL(localUrl);
+  localUrl = null;
+}
+function localMediaURL(item) {
+  if (!item.file)
+    throw new Error("Выберите видео ещё раз: браузер больше не держит этот файл.");
+  releaseLocalUrl();
+  localUrl = URL.createObjectURL(item.file);
+  return localUrl;
+}
+async function loadLocal(files) {
+  const catalog = localCatalog(
+    [...files].map((file, index) => ({
+      index,
+      name: file.name,
+      relativePath: file.webkitRelativePath || file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+      type: file.type,
+    })),
+  );
+  if (!catalog) {
+    notice(
+      "В выбранном нет видео. Выберите папку с роликами или отдельные видеофайлы.",
+      true,
+    );
+    return;
+  }
+  const byIndex = [...files];
+  resetSession();
+  source = { local: true, key: catalog.identity, identity: catalog.identity, path: "" };
+  items = catalog.items.map((item) => ({ ...item, file: byIndex[item.index] }));
+  folders = [];
+  folderName = catalog.title;
+  document.body.classList.add("has-source");
+  $("folder-name").textContent = folderName;
+  $("folder-nav").hidden = true;
+  $("video-count").textContent = String(items.length);
+  $("list-tools").hidden = !items.length;
+  notice(
+    catalog.truncated
+      ? `Показаны первые ${items.length} видео. Остальные выберите отдельной папкой.`
+      : "Файлы остаются на устройстве и никуда не отправляются. После обновления страницы выберите их снова.",
+  );
+  renderList();
+  if (items[0]) await openVideo(items[0], false);
+}
 async function hrefFor(origin, item, signal) {
+  if (item.file) return localMediaURL(item);
   const params = { public_key: origin.key };
   if (item.path && item.path !== "/") params.path = item.path;
   return safeMediaURL(
@@ -399,6 +452,19 @@ $("cancel-load").onclick = () => {
   resetSession();
   notice("Загрузка списка отменена.");
 };
+function chooseLocal(input) {
+  input.value = "";
+  input.click();
+}
+$("pick-local-folder").onclick = () => chooseLocal($("local-folder"));
+$("pick-local-files").onclick = () => chooseLocal($("local-files"));
+for (const input of [$("local-folder"), $("local-files")]) {
+  input.addEventListener("change", () => {
+    const files = [...input.files];
+    input.value = "";
+    if (files.length) loadLocal(files);
+  });
+}
 $("folder-back").onclick = () => {
   if (!folderStack.length) return;
   const next = folderStack.slice(0, -1);
@@ -582,6 +648,7 @@ function resetSession() {
   video.pause();
   video.removeAttribute("src");
   video.load();
+  releaseLocalUrl();
   releaseSource(token);
   if (overview) video.muted = previousMuted;
   overview = limited = false;
@@ -751,7 +818,13 @@ async function openVideo(
   $("empty").hidden = true;
   $("center-play").hidden = true;
   $("video-error").hidden = true;
-  $("disk-link").href = linkFor(current.origin, item);
+  if (item.file) {
+    $("disk-link").hidden = true;
+    $("disk-link").removeAttribute("href");
+  } else {
+    $("disk-link").hidden = false;
+    $("disk-link").href = linkFor(current.origin, item);
+  }
   $("elapsed").textContent = "0:00";
   $("duration").textContent = timeLabel(record(current.key).duration);
   $("seek").value = 0;
@@ -767,6 +840,7 @@ async function openVideo(
     let mediaHref = href;
     // Prepare known camera containers before Safari's media loader rejects hev1.
     if (
+      !item.file &&
       appleBrowser &&
       /\.(mp4|mov|m4v)$/i.test(item.name) &&
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
@@ -817,6 +891,10 @@ $("retry-video").onclick = () => {
     key = current.key;
   // Retrying uses the original source even if the playlist was changed meanwhile.
   if (source?.identity !== origin.identity) {
+    if (origin.local) {
+      notice("Выберите папку или видео на устройстве ещё раз.", true);
+      return;
+    }
     $("source").value = origin.key;
     loadSource(origin, item.path);
     return;
@@ -941,6 +1019,7 @@ video.addEventListener("error", async () => {
   const autoplay = metadataTarget?.autoplay ?? current.wasPlaying ?? false;
   try {
     if (
+      !current.item?.file &&
       [3, 4].includes(code) &&
       !current.compatTried &&
       current.originalHref &&
@@ -963,6 +1042,7 @@ video.addEventListener("error", async () => {
     if (generation !== mediaGeneration) return;
     // One fresh URL / stream recovers interrupted or expired sessions, without a loop.
     if (
+      !current.item?.file &&
       !current.recovery &&
       (code === 2 || current.compatToken) &&
       source?.identity === current.origin.identity
@@ -977,7 +1057,14 @@ video.addEventListener("error", async () => {
       transport: failure?.code || null,
       httpStatus: failure?.status || null,
     };
-    if (failure || code === 2) {
+    if (current.item?.file) {
+      showVideoError(
+        code === 2
+          ? "Не удалось прочитать видео на устройстве. Выберите его ещё раз."
+          : "Браузер не смог открыть этот файл. Для телефона лучше подходит MP4 с H.264.",
+        detail,
+      );
+    } else if (failure || code === 2) {
       showVideoError(
         failure?.status === 429
           ? "Яндекс Диск ограничил запросы. Подождите немного и повторите попытку."
@@ -1340,7 +1427,7 @@ function scheduleProbe() {
     probeTimer = setTimeout(probeDuration, 1200);
 }
 async function probeDuration() {
-  if (!source || !pageActive || !video.paused || !playerReady || probe) return;
+  if (!source || source.local || !pageActive || !video.paused || !playerReady || probe) return;
   const item = items.find(
     (x) =>
       (/\.(mp4|mov|m4v)$/i.test(x.name) ||

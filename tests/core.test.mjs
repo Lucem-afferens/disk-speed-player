@@ -4,6 +4,7 @@ import {
   parseLink,
   mediaKey,
   isVideo,
+  localCatalog,
   safeMediaURL,
   nativeRate,
   overviewTarget,
@@ -49,6 +50,27 @@ test("only video files enter playlist", () => {
   assert.equal(isVideo({ type: "file", mime_type: "video/quicktime" }), true);
   assert.equal(isVideo({ type: "dir", name: "camera.mp4" }), false);
   assert.equal(isVideo({ type: "file", name: "invoice.pdf" }), false);
+});
+test("local folder keeps nested videos and ignores other files", () => {
+  const catalog = localCatalog([
+    { index: 0, name: "notes.txt", relativePath: "Диск/notes.txt", size: 4 },
+    { index: 1, name: ".hidden.mp4", relativePath: "Диск/.hidden.mp4", size: 4 },
+    { index: 2, name: "b.mp4", relativePath: "Диск/nested/b.mp4", size: 20, lastModified: 2 },
+    { index: 3, name: "a.mkv", relativePath: "Диск/a.mkv", size: 10, lastModified: 1 },
+  ]);
+  assert.equal(catalog.title, "Диск");
+  assert.deepEqual(catalog.items.map((item) => item.path), ["/Диск/a.mkv", "/Диск/nested/b.mp4"]);
+  assert.equal(catalog.items[0].index, 3);
+  assert.equal(catalog.identity.startsWith("local:"), true);
+  const again = localCatalog([
+    { index: 3, name: "a.mkv", relativePath: "Диск/a.mkv", size: 10, lastModified: 1 },
+    { index: 2, name: "b.mp4", relativePath: "Диск/nested/b.mp4", size: 20, lastModified: 2 },
+  ]);
+  assert.equal(again.identity, catalog.identity);
+  assert.equal(localCatalog([{ name: "readme.txt", relativePath: "readme.txt" }]), null);
+  const single = localCatalog([{ index: 0, name: "фильм.mp4", relativePath: "фильм.mp4", size: 8 }]);
+  assert.equal(single.title, "фильм.mp4");
+  assert.equal(single.items[0].path, "/фильм.mp4");
 });
 test("media URLs must belong to HTTPS Yandex storage", () => {
   assert.equal(

@@ -234,6 +234,26 @@ h1 {
   min-height: 24px;
   font-size: 11px;
 }
+.local-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.local-source span {
+  font-size: 13px;
+  font-weight: 650;
+  margin-right: auto;
+}
+.local-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+}
 .notice {
   padding: 14px 18px;
   border-radius: 12px;

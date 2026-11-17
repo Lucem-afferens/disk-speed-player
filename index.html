@@ -19,7 +19,7 @@
     <meta name="referrer" content="no-referrer" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; worker-src 'self'; connect-src 'self' https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; media-src 'self' https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; object-src 'none'; base-uri 'self'; form-action 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; worker-src 'self'; connect-src 'self' https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; media-src 'self' blob: https://*.yandex.ru https://*.yandex.net https://*.yandex.com https://*.yandex.by https://*.yandex.kz https://*.yandex.com.tr https://*.yandexcloud.net; object-src 'none'; base-uri 'self'; form-action 'none'"
     />
     <title>Disk Play — видео в вашем темпе</title>
     <meta
@@ -27,11 +27,11 @@
       content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра."
     />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css?v=20261115.5" />
+    <link rel="stylesheet" href="./style.css?v=20261117.1" />
     <script
       defer
-      src="./boot.js?v=20261115.7"
-      data-version="20261115.7"
+      src="./boot.js?v=20261117.1"
+      data-version="20261117.1"
     ></script>
   </head>
   <body>
@@ -144,6 +144,34 @@
             Очистить папку и видео
           </button>
         </div>
+        <div class="local-source">
+          <span id="local-source-label">Уже на устройстве</span>
+          <button id="pick-local-folder" class="secondary" type="button">
+            Выбрать папку
+          </button>
+          <button id="pick-local-files" class="secondary" type="button">
+            Выбрать видео
+          </button>
+          <input
+            id="local-folder"
+            type="file"
+            webkitdirectory
+            directory
+            multiple
+            hidden
+          />
+          <input
+            id="local-files"
+            type="file"
+            accept="video/*,.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.ts,.mts,.m2ts,.mpeg,.mpg,.ogv,.3gp,.vob"
+            multiple
+            hidden
+          />
+        </div>
+        <p class="local-note">
+          Папка со вложенными папками или отдельные ролики, в том числе с
+          внешнего диска. Файлы остаются на устройстве и никуда не отправляются.
+        </p>
       </form>
       <div id="source-status" class="notice" role="status" hidden></div>
       <section class="workspace" aria-label="Плеер и список видео">
@@ -373,7 +401,7 @@
       <footer class="site-footer">
         <span
           >Видео остаются на вашем Диске.<small class="build-version"
-            >Версия 20261115.5</small
+            >Версия 20261117.1</small
           ></span
         ><button id="clear-history" class="text-button">
           Очистить историю устройства
@@ -393,7 +421,9 @@
       </div>
       <p>
         На Яндекс Диске нажмите «Поделиться» у видео или папки. Вставьте
-        публичную ссылку в поле и нажмите «Открыть».
+        публичную ссылку в поле и нажмите «Открыть». Уже скачанное видео или
+        папка на этом устройстве и на внешнем диске открываются кнопками
+        «Выбрать папку» и «Выбрать видео». Эти файлы читает только браузер.
       </p>
       <p>
         Видео загружается напрямую с Диска в браузер. Наш сервер и аккаунт не

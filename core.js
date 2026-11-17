@@ -52,10 +52,81 @@ export function isVideo(item) {
   return (
     item.type === "file" &&
     (/^video\//.test(item.mime_type || "") ||
-      /\.(mp4|m4v|mov|webm|mkv|avi|wmv|ts|mts|m2ts|mpeg|mpg|3gp|ogv)$/i.test(
+      /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|ts|mts|m2ts|mpeg|mpg|3gp|ogv|vob)$/i.test(
         item.name || "",
       ))
   );
+}
+function localFingerprint(text) {
+  let a = 2166136261,
+    b = 2166136261 ^ 0x9e3779b9;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    a ^= code;
+    b ^= code + i;
+    a = Math.imul(a, 16777619);
+    b = Math.imul(b, 2246822519);
+  }
+  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+}
+// Descriptors are plain file facts from the browser picker. The File object
+// stays in the page; this result is safe to compare and store as an identity.
+export function localCatalog(descriptors) {
+  const rows = [];
+  for (const file of descriptors || []) {
+    const relative = String(file.relativePath || file.name || "")
+      .replaceAll("\\", "/")
+      .split("/")
+      .filter(Boolean);
+    if (!relative.length || relative.some((part) => part.startsWith(".")))
+      continue;
+    const name = relative.at(-1);
+    if (
+      !isVideo({
+        type: "file",
+        name,
+        mime_type: file.type || "",
+      })
+    )
+      continue;
+    rows.push({
+      index: file.index,
+      name,
+      path: "/" + relative.join("/"),
+      relative: relative.join("/"),
+      size: Number(file.size) || 0,
+      modified: Number(file.lastModified) || 0,
+      mime_type: file.type || "",
+      type: "file",
+    });
+  }
+  rows.sort((a, b) =>
+    a.relative.localeCompare(b.relative, "ru", {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  );
+  if (!rows.length) return null;
+  const limit = 20000;
+  const shown = rows.slice(0, limit);
+  const tops = new Set(shown.map((row) => row.relative.split("/")[0]));
+  const nested = shown.some((row) => row.relative.includes("/"));
+  const title =
+    nested && tops.size === 1
+      ? [...tops][0]
+      : shown.length === 1
+        ? shown[0].name
+        : "Видео на устройстве";
+  return {
+    title,
+    identity:
+      "local:" +
+      localFingerprint(
+        shown.map((row) => `${row.path}|${row.size}|${row.modified}`).join("\n"),
+      ),
+    truncated: rows.length > shown.length,
+    items: shown,
+  };
 }
 export function timeLabel(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
