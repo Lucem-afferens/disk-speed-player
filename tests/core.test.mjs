@@ -4,6 +4,7 @@ import {
   parseLink,
   mediaKey,
   isVideo,
+  isDeviceFile,
   localCatalog,
   safeMediaURL,
   nativeRate,
@@ -50,6 +51,11 @@ test("only video files enter playlist", () => {
   assert.equal(isVideo({ type: "file", mime_type: "video/quicktime" }), true);
   assert.equal(isVideo({ type: "dir", name: "camera.mp4" }), false);
   assert.equal(isVideo({ type: "file", name: "invoice.pdf" }), false);
+});
+test("Yandex file URL is not a device file", () => {
+  assert.equal(isDeviceFile("https://downloader.disk.yandex.ru/disk/example"), false);
+  assert.equal(isDeviceFile(undefined), false);
+  assert.equal(isDeviceFile(new Blob(["x"], { type: "video/mp4" })), true);
 });
 test("local folder keeps nested videos and ignores other files", () => {
   const catalog = localCatalog([

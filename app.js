@@ -3,6 +3,7 @@ import {
   parseLink,
   mediaKey,
   isVideo,
+  isDeviceFile,
   localCatalog,
   timeLabel,
   sizeLabel,
@@ -10,7 +11,7 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261118.1";
+} from "./core.js?v=20261118.2";
 import {
   VERSION,
   compatibleSource,
@@ -283,7 +284,7 @@ function releaseLocalUrl() {
   localUrl = null;
 }
 function localMediaURL(item) {
-  if (!item.file)
+  if (!isDeviceFile(item.file))
     throw new Error("Выберите видео ещё раз: браузер больше не держит этот файл.");
   releaseLocalUrl();
   localUrl = URL.createObjectURL(item.file);
@@ -327,7 +328,7 @@ async function loadLocal(files) {
   if (items[0]) await openVideo(items[0], false);
 }
 async function hrefFor(origin, item, signal) {
-  if (item.file) return localMediaURL(item);
+  if (isDeviceFile(item.file)) return localMediaURL(item);
   if (item.importURL) return item.importURL;
   const params = { public_key: origin.key };
   if (item.path && item.path !== "/") params.path = item.path;
@@ -819,7 +820,7 @@ async function openVideo(
   $("empty").hidden = true;
   $("center-play").hidden = true;
   $("video-error").hidden = true;
-  if (item.file || item.importURL) {
+  if (isDeviceFile(item.file) || item.importURL) {
     $("disk-link").hidden = true;
     $("disk-link").removeAttribute("href");
   } else {
@@ -841,7 +842,7 @@ async function openVideo(
     let mediaHref = href;
     // Prepare known camera containers before Safari's media loader rejects hev1.
     if (
-      !item.file && !item.importURL &&
+      !isDeviceFile(item.file) && !item.importURL &&
       appleBrowser &&
       /\.(mp4|mov|m4v)$/i.test(item.name) &&
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
@@ -1020,7 +1021,7 @@ video.addEventListener("error", async () => {
   const autoplay = metadataTarget?.autoplay ?? current.wasPlaying ?? false;
   try {
     if (
-      !current.item?.file &&
+      !isDeviceFile(current.item?.file) &&
       [3, 4].includes(code) &&
       !current.compatTried &&
       current.originalHref &&
@@ -1043,7 +1044,7 @@ video.addEventListener("error", async () => {
     if (generation !== mediaGeneration) return;
     // One fresh URL / stream recovers interrupted or expired sessions, without a loop.
     if (
-      !current.item?.file &&
+      !isDeviceFile(current.item?.file) &&
       !current.recovery &&
       (code === 2 || current.compatToken) &&
       source?.identity === current.origin.identity
@@ -1058,7 +1059,7 @@ video.addEventListener("error", async () => {
       transport: failure?.code || null,
       httpStatus: failure?.status || null,
     };
-    if (current.item?.file) {
+    if (isDeviceFile(current.item?.file)) {
       showVideoError(
         code === 2
           ? "Не удалось прочитать видео на устройстве. Выберите его ещё раз."

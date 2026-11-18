@@ -48,6 +48,11 @@ export function mediaKey(source, item) {
     (item.size || 0)
   );
 }
+// Yandex file resources include a string field named file (a temporary URL).
+// Only a real browser Blob is a video chosen on this device.
+export function isDeviceFile(file) {
+  return typeof Blob === "function" && file instanceof Blob;
+}
 export function isVideo(item) {
   return (
     item.type === "file" &&
