@@ -27,11 +27,11 @@
       content="Откройте публичную ссылку Яндекс Диска. Смотрите видео и папки в удобном плеере с ускорением и отметками просмотра."
     />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css?v=20261117.1" />
+    <link rel="stylesheet" href="./style.css?v=20261118.1" />
     <script
       defer
-      src="./boot.js?v=20261117.1"
-      data-version="20261117.1"
+      src="./boot.js?v=20261118.1"
+      data-version="20261118.1"
     ></script>
   </head>
   <body>
@@ -114,7 +114,7 @@
         <span id="boot-message">Запускаем плеер…</span>
         <a href="./" class="text-button">Обновить страницу</a>
       </div>
-      <form id="source-form" class="source-form" novalidate>
+      <details class="panel"><summary>Скачать с сайта — YouTube, VK и другие</summary><p>Загрузка работает в локальной версии. На GitHub Pages откройте уже скачанные видео кнопками выбора файлов или папки.</p><label for="internet-url">Ссылка на видео или плейлист</label><input id="internet-url" type="url" placeholder="https://…"><button id="internet-start" class="secondary" type="button">Скачать и открыть</button><button id="internet-cancel" class="secondary" type="button" hidden>Отменить загрузку</button><p id="internet-status" role="status" aria-live="polite"></p></details><form id="source-form" class="source-form" novalidate>
         <label for="source">Ссылка Яндекс Диска на видео или папку</label>
         <div class="source-row">
           <input
@@ -401,7 +401,7 @@
       <footer class="site-footer">
         <span
           >Видео остаются на вашем Диске.<small class="build-version"
-            >Версия 20261117.1</small
+            >Версия 20261118.1</small
           ></span
         ><button id="clear-history" class="text-button">
           Очистить историю устройства

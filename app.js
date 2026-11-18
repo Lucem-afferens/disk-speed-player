@@ -10,7 +10,7 @@ import {
   nativeRate,
   bufferedEnd,
   overviewTarget,
-} from "./core.js?v=20261117.1";
+} from "./core.js?v=20261118.1";
 import {
   VERSION,
   compatibleSource,
@@ -328,6 +328,7 @@ async function loadLocal(files) {
 }
 async function hrefFor(origin, item, signal) {
   if (item.file) return localMediaURL(item);
+  if (item.importURL) return item.importURL;
   const params = { public_key: origin.key };
   if (item.path && item.path !== "/") params.path = item.path;
   return safeMediaURL(
@@ -818,7 +819,7 @@ async function openVideo(
   $("empty").hidden = true;
   $("center-play").hidden = true;
   $("video-error").hidden = true;
-  if (item.file) {
+  if (item.file || item.importURL) {
     $("disk-link").hidden = true;
     $("disk-link").removeAttribute("href");
   } else {
@@ -840,7 +841,7 @@ async function openVideo(
     let mediaHref = href;
     // Prepare known camera containers before Safari's media loader rejects hev1.
     if (
-      !item.file &&
+      !item.file && !item.importURL &&
       appleBrowser &&
       /\.(mp4|mov|m4v)$/i.test(item.name) &&
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L150.B0"')
@@ -1596,3 +1597,27 @@ if (savedSession) {
     savedSession,
   );
 }
+
+// Internet downloads are available only in the local edition, never via a public proxy.
+let importId=null;
+async function importAPI(action,data){
+ const response=await fetch('/api/import/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+ if(response.status===404)throw new Error('Загрузка с сайтов доступна при локальном запуске: python3 local_server.py. На GitHub Pages выберите уже скачанные файлы или папку.');
+ const result=await response.json();if(!response.ok)throw new Error(result.error||'Ошибка загрузчика');return result;
+}
+$('internet-start').onclick=async()=>{
+ $('internet-start').disabled=true;
+ try{
+  if(!['localhost','127.0.0.1'].includes(location.hostname))throw new Error('YouTube, VK и другие сайты скачиваются в локальной версии: запустите python3 local_server.py. Здесь можно открыть скачанные файлы или папку.');
+  let job=await importAPI('start',{url:$('internet-url').value.trim()});importId=job.id;$('internet-cancel').hidden=false;
+  while(['running','cancelling'].includes(job.status)){$('internet-status').textContent=job.message;await new Promise(r=>setTimeout(r,1200));job=await importAPI('status',{id:importId});}
+  $('internet-status').textContent=job.message+(job.path?' Папка: '+job.path:'');
+  if(job.status==='done'){
+   resetSession();source={local:true,key:'import:'+job.id,identity:'import:'+job.id,path:''};
+   items=job.items.map(f=>({...f,type:'file',relative:f.path,importURL:'/imports/'+job.id+'/'+f.path.split('/').map(encodeURIComponent).join('/')}));
+   folders=[];folderName='Скачанные видео';document.body.classList.add('has-source');$('folder-name').textContent=folderName;$('folder-nav').hidden=true;$('video-count').textContent=String(items.length);$('list-tools').hidden=!items.length;renderList();if(items[0])await openVideo(items[0],false);
+  }
+ }catch(error){$('internet-status').textContent=error.message;}
+ finally{$('internet-start').disabled=false;$('internet-cancel').hidden=true;importId=null;}
+};
+$('internet-cancel').onclick=async()=>{if(importId)try{await importAPI('cancel',{id:importId});}catch(error){$('internet-status').textContent=error.message;}};

@@ -52,7 +52,7 @@ export function isVideo(item) {
   return (
     item.type === "file" &&
     (/^video\//.test(item.mime_type || "") ||
-      /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|ts|mts|m2ts|mpeg|mpg|3gp|ogv|vob)$/i.test(
+      /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|ts|mts|m2ts|mpeg|mpg|3gp|ogv|vob|mxf|asf|m2v|mpe|f4v|3g2)$/i.test(
         item.name || "",
       ))
   );
